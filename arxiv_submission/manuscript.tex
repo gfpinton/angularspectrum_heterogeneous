@@ -8,18 +8,14 @@
 \usepackage{cleveref}
 \usepackage{siunitx}
 \usepackage[utf8]{inputenc}
-\usepackage[section]{placeins}
 
 \title{An Angular Spectrum Method for Nonlinear Propagation in
 Heterogeneous Tissue with Immersed Sources for Transcranial and
 Therapeutic Ultrasound}
 
-\author{Gianmarco F.\ Pinton\\
-\small Lampe Joint Department of Biomedical Engineering,\\
-\small University of North Carolina at Chapel Hill and\\
-\small North Carolina State University, Chapel Hill, NC}
+\author{G.F.\ Pinton}
 
-\date{}
+\date{April 21, 2026}
 
 \begin{document}
 \maketitle
@@ -39,9 +35,9 @@ accurate simulation of clinical devices such as the TIPS annular
 phased array.  The nonlinear operator supports both a first-order
 Rusanov flux and a second-order Kurganov--Tadmor (KT) scheme with
 adaptive CFL sub-cycling, composed via Strang splitting.  Three
-enhanced absorbing-boundary treatments (a Wendland $C^2$ taper,
+enhanced absorbing-boundary treatments---a Wendland $C^2$ taper,
 frequency-weighted spatial damping, and a first-order Engquist--Majda
-super-absorbing correction) reduce boundary reflections by a factor
+super-absorbing correction---reduce boundary reflections by a factor
 of 2.4 relative to a standard quadratic absorber.  Validation against
 analytical solutions confirms that the propagator reproduces the
 baffled-piston far-field pattern with RMS error 0.014 and the
@@ -52,9 +48,7 @@ through-skull insertion loss of \SI{5.4}{\deci\bel}.  For the TIPS
 bowl transducer ($R = \SI{80}{\milli\meter}$,
 $f_0 = \SI{1}{\mega\hertz}$), the plane-by-plane ASM matches the FDTD
 focal depth to within 2.3\% while requiring $9\times$ less memory and
-$2.9\times$ less wall time.  These capabilities make the ASM a practical tool for transcranial
-treatment planning, aberration correction, acoustic radiation force
-estimation, thermal dose prediction, and ultrasonic neuromodulation.
+$2.9\times$ less wall time.
 \end{abstract}
 
 % ------------------------------------------------------------------
@@ -72,19 +66,7 @@ finite-difference time-domain (FDTD) solvers
 alternative: by decomposing the field into plane-wave components and
 applying the exact free-space propagator in wavenumber space via the
 FFT, it avoids the paraxial approximation while remaining
-computationally efficient.  A further advantage of the ASM for
-therapeutic applications is its ability to support a fine temporal
-grid independently of the spatial grid.  In FDTD methods the temporal
-and spatial sampling are coupled through the CFL condition, so
-resolving shocked waveforms with steep temporal gradients requires
-refining the entire 3-D spatial grid.  In the ASM the retarded-time
-Burgers update operates on a 1-D temporal axis at each spatial point,
-so the temporal sampling can be made arbitrarily fine without
-increasing the spatial grid size or the cost of the diffraction step.
-This makes the ASM particularly well suited to nonlinear propagation
-in the shock-forming regime.  The principal limitation of the ASM is
-that it is a forward-only propagator: it cannot model reflections,
-mode conversion, or multiple scattering at acoustic interfaces.
+computationally efficient.
 
 Nonlinear propagation introduces cumulative harmonic generation and
 eventual shock formation, which must be handled by a conservative
@@ -370,13 +352,13 @@ distance $z_t \approx a^2/\lambda$.  In the far field, the lateral
 intensity matches the Fraunhofer pattern
 $(2J_1(k_0 a r/z) / k_0 a r/z)^2$ with RMS error 0.014.
 
-\begin{figure}[htbp]
+\begin{figure}[t]
   \centering
-  \includegraphics[width=\columnwidth]{validation_results/analytical/testC_focused_piston.png}
+  \includegraphics[width=\columnwidth]{fig1_focused_piston.png}
   \caption{Focused piston diffraction ($a = 8\lambda$,
     $F = \SI{20}{\milli\meter}$, $F\#\,\approx 3.3$).  Top:
-    on-axis amplitude versus paraxial solution (left, RMS 0.089)
-    and focal-plane lateral profile versus Airy pattern (right,
+    on-axis amplitude versus paraxial solution (left; RMS 0.089)
+    and focal-plane lateral profile versus Airy pattern (right;
     RMS 0.002).  Bottom: $x$--$z$ and $y$--$z$ time-integrated
     intensity.}
   \label{fig:focused_piston}
@@ -403,9 +385,9 @@ $\alpha_0 f$ power law with RMS error
 follows the Kramers--Kronig dispersion relation across the full
 0.5--\SI{10}{\MHz} range, crossing $c_0$ at $f_0$ as expected.
 
-\begin{figure}[htbp]
+\begin{figure}[t]
   \centering
-  \includegraphics[width=\columnwidth]{validation_results/test10_attenuation_kk.png}
+  \includegraphics[width=\columnwidth]{fig2_attenuation_kk.png}
   \caption{Attenuation and Kramers--Kronig dispersion validation
     (0.5--\SI{10}{\MHz}).  Top: measured vs.\ theoretical attenuation
     and error.  Bottom: phase velocity and waveform comparison.}
@@ -433,18 +415,18 @@ cells) confirmed that the KT flux resolves the shock more sharply
 than Rusanov ($L^2$ error 0.036 vs.\ 0.044 at $t = 0.5$), with
 both schemes capturing the correct shock speed (\cref{fig:riemann}).
 
-\begin{figure}[htbp]
+\begin{figure}[t]
   \centering
-  \includegraphics[width=\columnwidth]{validation_results/test8_tvd_shock_step_size.png}
+  \includegraphics[width=\columnwidth]{fig3_shock_step_size.png}
   \caption{Shock-forming Burgers problem.  Left: $L^2$ error versus
     step size.  Center: total variation.  Right: coarsest-step
     waveforms.  KT-adaptive is stable and accurate at all step sizes.}
   \label{fig:test3}
 \end{figure}
 
-\begin{figure}[htbp]
+\begin{figure}[t]
   \centering
-  \includegraphics[width=\columnwidth]{validation_results/analytical/testB_riemann.png}
+  \includegraphics[width=\columnwidth]{fig4_riemann.png}
   \caption{Riemann problem at $t = 0.1, 0.3, 0.5$.  Rusanov (circles)
     and KT (squares) overlaid on the exact solution (solid).}
   \label{fig:riemann}
@@ -456,7 +438,7 @@ both schemes capturing the correct shock speed (\cref{fig:riemann}).
 The three boundary improvements were evaluated using apertures wide
 enough to drive significant energy toward the domain edges.
 \Cref{tab:bdy_reflection} shows the boundary-to-center intensity
-ratio for progressively adding each improvement. The combined
+ratio for progressively adding each improvement; the combined
 configuration reduces reflections by $2.4\times$ relative to the
 quadratic baseline.  A frequency-resolved comparison confirmed that
 the frequency-weighted damping preferentially targets low-frequency
@@ -468,7 +450,7 @@ quadratic baseline while preserving the interior waveform shape and
 harmonic spectrum to within $<\!1$\,dB
 (\cref{fig:bdy5_profiles}).
 
-\begin{table}[htbp]
+\begin{table}[h]
   \centering
   \caption{Boundary reflection ratio for four configurations.}
   \label{tab:bdy_reflection}
@@ -484,12 +466,12 @@ harmonic spectrum to within $<\!1$\,dB
   \end{tabular}
 \end{table}
 
-\begin{figure}[htbp]
+\begin{figure}[t]
   \centering
-  \includegraphics[width=0.95\columnwidth]{validation_results/boundaries/test5_combined_profiles.png}
+  \includegraphics[width=0.95\columnwidth]{fig5_boundary_profiles.png}
   \caption{Combined boundary with nonlinear propagation: final
     waveform (left) and spectrum (right) for four boundary
-    configurations.  The interior waveform is invariant and harmonic
+    configurations.  The interior waveform is invariant; harmonic
     levels match to $<\!1$\,dB.}
   \label{fig:bdy5_profiles}
 \end{figure}
@@ -502,12 +484,12 @@ A pairwise convergence study in the strongly nonlinear regime
 propagation) compared the $\Delta z$-vs-$\Delta z/2$ error for
 sequential Rusanov, Strang+Rusanov, and Strang+KT
 (\cref{fig:test6}).  Sequential and split-Rusanov converge at rate
-$\approx 1$, while Strang+KT converges at rate $\approx 2$, consistent
+$\approx 1$; Strang+KT converges at rate $\approx 2$, consistent
 with the expected second-order Strang splitting accuracy.
 
-\begin{figure}[htbp]
+\begin{figure}[t]
   \centering
-  \includegraphics[width=\columnwidth]{validation_results/test6_convergence.png}
+  \includegraphics[width=\columnwidth]{fig6_convergence.png}
   \caption{Step-size convergence.  Left: coarsest waveforms.  Right:
     pairwise $L^2$ error.  Strang+KT achieves rate $\approx 2$.}
   \label{fig:test6}
@@ -629,9 +611,9 @@ heterogeneous phase-and-amplitude-screen extension captures the
 dominant first-order effects of skull aberration and attenuation while
 preserving the computational efficiency of the ASM.
 
-\begin{figure}[htbp]
+\begin{figure}[t]
   \centering
-  \includegraphics[width=\columnwidth]{validation_results/transcranial/setup_overview.png}
+  \includegraphics[width=\columnwidth]{fig7_transcranial_setup.png}
   \caption{Transcranial simulation setup.  Top left: whole-skull axial
     reference slice with beam axis overlaid.  Top center: source-plane
     pressure magnitude from the 1024-element sparse array.  Top right:
@@ -641,9 +623,9 @@ preserving the computational efficiency of the ASM.
   \label{fig:transcranial_setup}
 \end{figure}
 
-\begin{figure}[htbp]
+\begin{figure}[t]
   \centering
-  \includegraphics[width=\columnwidth]{validation_results/transcranial/transcranial_comparison.png}
+  \includegraphics[width=\columnwidth]{fig8_transcranial_comparison.png}
   \caption{Transcranial comparison referenced to the homogeneous ASM
     field.  Top row: axial ($x$--$z$) beam profiles for ASM
     homogeneous, ASM through skull, and FDTD.  Middle row:
@@ -747,7 +729,7 @@ peak intensity so the beam shapes can be compared directly.
 The ASM focuses at $z = \SI{52.7}{\milli\meter}$, within 2.3\% of
 the FDTD focal depth at \SI{53.9}{\milli\meter}.
 The on-axis, lateral, and elevational beam profiles match well in
-shape. The remaining differences are concentrated in the pre-focal
+shape; the remaining differences are concentrated in the pre-focal
 near-field where the annular aperture geometry produces
 resolution-dependent interference fringes.
 The FDTD drives the bowl surface with three voxel layers extruded
@@ -756,7 +738,7 @@ $z$-slice.  To match the FDTD source coupling, the ASM source amplitude is scale
 by a calibration factor of 1.31.  This factor accounts for the
 coherent array factor of the three-layer volumetric source at the FDTD
 grid spacing ($k \Delta x \approx 0.79$\,rad, CFL $= 0.2$) and is
-specific to this FDTD configuration and would need to be recalibrated
+specific to this FDTD configuration; it would need to be recalibrated
 for a different number of layers or grid resolution.  After
 calibration, both methods produce a focal peak pressure of
 \SI{13.8}{\mega\pascal}.
@@ -769,16 +751,16 @@ material maps), totaling roughly \SI{15}{\giga\byte}.  The ASM
 stores only the current 2-D-plus-time field
 ($365 \times 365 \times 425 \approx \SI{57}{M}$ points) together with
 precomputed frequency-domain operators of the same shape, for a total
-of approximately \SI{1.6}{\giga\byte}, a factor of nine reduction.
+of approximately \SI{1.6}{\giga\byte}---a factor of nine reduction.
 For the present benchmark the FDTD completes in \SI{1477}{\second}
 (multi-GPU) while the ASM requires \SI{516}{\second} (single GPU),
 a $2.9\times$ speed-up despite using only one GPU.  The ASM wall time
 is dominated by its 260 sequential FFT-based propagation steps and
 could be reduced further with a coarser axial step.
 
-\begin{figure}[htbp]
+\begin{figure}[t]
   \centering
-  \includegraphics[width=\columnwidth]{validation_results/bowl/tips_setup.png}
+  \includegraphics[width=\columnwidth]{fig9_tips_setup.png}
   \caption{TIPS bowl transducer setup.  Top left: bowl cross-section
     ($R = \SI{80}{\milli\meter}$) with element boundaries and focal
     lines.  Top right: plane-by-plane source slices spanning the
@@ -787,9 +769,9 @@ could be reduced further with a coarser axial step.
   \label{fig:tips_setup}
 \end{figure}
 
-\begin{figure}[htbp]
+\begin{figure}[t]
   \centering
-  \includegraphics[width=\columnwidth]{validation_results/bowl/tips_comparison.png}
+  \includegraphics[width=\columnwidth]{fig10_tips_comparison.png}
   \caption{TIPS bowl comparison: ASM plane-by-plane vs FDTD in water.
     Top row: axial ($x$--$z$) beam profiles.  Middle row: focal-plane
     ($x$--$y$) intensity maps at each method's focal depth.  Bottom
@@ -850,7 +832,7 @@ differently from the ASM's single-layer planar injection, requiring an
 empirical amplitude calibration factor (here 1.31) that depends on the
 FDTD grid spacing and number of source layers.  The super-absorbing
 boundary uses a first-order Engquist--Majda decomposition, which is
-exact only for normally-incident waves. A higher-order formulation
+exact only for normally-incident waves; a higher-order formulation
 \cite{higdon1986} could improve performance for wide-angle beams.
 Finally, although the Strang+KT splitting achieves second-order
 convergence when the nonlinear operator is tested in isolation, the
@@ -872,7 +854,7 @@ loss into the FFT-based propagator, matching an FDTD reference to
 insertion loss of \SI{5.4}{\deci\bel}, consistent with measured
 values.  Plane-by-plane source injection enables accurate modeling of
 spherical-bowl transducers whose curvature depth exceeds the
-wavelength. For a clinical TIPS annular array, the method matches the
+wavelength; for a clinical TIPS annular array, the method matches the
 FDTD focal depth to within 2.3\% while requiring $9\times$ less
 memory and $2.9\times$ less wall time.
 
@@ -891,14 +873,10 @@ heterogeneous transcranial paths and immersed curved-source
 geometries, at computational costs that are compatible with treatment
 planning and real-time aberration correction workflows.
 
-\section*{Acknowledgments}
-
-This work was supported by the National Institutes of Health under
-grants R01EB029419 and R01EB036295.
-
 % ------------------------------------------------------------------
 The source code is available at
-\url{https://github.com/gfpinton/angularspectrum_python}.
+\url{https://github.com/gfpinton/angularspectrum_python} under the
+LGPL v3 license.
 
 \begin{thebibliography}{20}
 
