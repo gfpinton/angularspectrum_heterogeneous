@@ -49,3 +49,4 @@ validation_results/transcranial/txrx_0/
 
 # Keep validation figure PNGs (override *.npz exclusion)
 !validation_results/**/*.png
+manuscript.tex
