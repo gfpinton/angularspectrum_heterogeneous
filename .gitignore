@@ -39,6 +39,10 @@ build/
 *.mat
 *.nrrd
 
+# arXiv submission files
+arxiv_submission/
+arxiv_submission.tar.gz
+
 # FDTD working directories
 validation_results/bowl/txrx_0/
 validation_results/transcranial/txrx_0/
