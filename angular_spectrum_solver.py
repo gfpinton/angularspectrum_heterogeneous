@@ -76,22 +76,25 @@ class SolverParams:
     # --- distributed source injection (bowl transducer) ---
     sourcePlanes: object = None  # list of (z_position, field_slice) from make_bowl_source_planes
     # --- diagnostic / validation imagery ---
-    # When ``diagnostic`` is True the solver writes runtime PNG dashboards
-    # every ``diagnosticInterval`` steps and a final summary report under
-    # ``diagnosticDir``. ``pdur`` (pulse duration, s) is used for the
-    # Isppa = pI * dT / (c0*rho0*pdur) conversion; if left None it is
+    # ``diagnostic`` defaults to True: the solver writes runtime PNG
+    # dashboards every ``diagnosticInterval`` steps and a final summary
+    # report under ``diagnosticDir``. ``pdur`` (pulse duration, s) is used
+    # for the Isppa = pI * dT / (c0*rho0*pdur) conversion; if None it is
     # estimated from the analytic-signal envelope of the central trace.
-    diagnostic: bool = False
-    diagnosticInterval: int = 5
+    # Set ``diagnostic=False`` for production sweeps where you don't need
+    # the imagery (also mandatory when ``useGPUReductions=True``).
+    diagnostic: bool = True
+    diagnosticInterval: int = 10
     diagnosticDir: str = './diagnostic_frames'
     diagnosticSummary: bool = True
     diagnosticInitialConditions: bool = True
     pdur: Optional[float] = None
-    # Pre-flight sanity report. When True, a single-page LaTeX/PDF report
-    # is generated under ``preflightDir`` (default: ``./preflight``). Set
-    # ``preflightDir = diagnosticDir`` to co-locate the report with the
-    # runtime diagnostic frames.
-    preflight: bool = False
+    # Pre-flight sanity report. Defaults to True: a single-page LaTeX/PDF
+    # report is generated under ``preflightDir`` before the solve starts.
+    # Set ``preflightDir = diagnosticDir`` to co-locate the report with
+    # the runtime frames. Set ``preflight=False`` to skip (e.g. inside
+    # parameter-sweep loops).
+    preflight: bool = True
     preflightDir: str = './preflight'
     preflightScenario: str = ''
     preflightCompilePdf: bool = True

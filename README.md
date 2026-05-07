@@ -67,53 +67,54 @@ initial_field = source_planes[0][1]
 params.sourcePlanes = source_planes[1:]
 ```
 
-### Pre-flight sanity report
+### Pre-flight + runtime diagnostics (default-on, opt-out)
 
-A single-page LaTeX/PDF summary of the upcoming run (grid resolution, pulse
-spectrum, material constants, derived quantities like Goldberg number and
-shock-formation length, plus automatic warnings for under-resolved grids
-or pulses touching the time-window edge):
+The solver runs two validation pipelines automatically every time
+`angular_spectrum_solve` is called:
+
+* **Pre-flight sanity report** before the solve starts — single-page
+  LaTeX/PDF under `params.preflightDir` (default `./preflight`) with
+  grid / pulse / material / numerics tables, an IC panels figure, and
+  automatic warnings for under-resolved grids, pulses touching the
+  time-window edge, predicted full-shock formation, etc. When
+  `phaseScreens` is set, a second page is appended with per-screen
+  phase maps, histograms, and amplitude transmission maps.
+* **Runtime diagnostics** during the solve — 3×3 PNG dashboards every
+  `diagnosticInterval` (default 10) march steps and an end-of-run
+  summary report under `params.diagnosticDir` (default
+  `./diagnostic_frames`) with Isppa / MI / PNP / PPP cross-sections,
+  boundary leakage check, stability curve, harmonics-vs-z, and
+  `metrics.json` (max Isppa, MI, peak focal location, etc.).
+
+Configure via `SolverParams`:
 
 ```python
-params = SolverParams(..., preflight=True,
-                      preflightDir='./preflight',
-                      preflightScenario='Bowl R=46 mm, ROC=80 mm')
+params = SolverParams(..., preflightScenario='Bowl R=46 mm, ROC=80 mm',
+                      diagnosticInterval=10,
+                      diagnosticDir='./run42_frames',
+                      preflightDir='./run42_preflight')
 angular_spectrum_solve(field, params)
-# → ./preflight/preflight.pdf  (+ preflight_panels.png, preflight.tex)
+# → ./run42_preflight/preflight.pdf
+# → ./run42_frames/frame_NNNN.png + ./run42_frames/summary/
 ```
 
-If `phaseScreens` is set, a second page with per-screen phase maps,
-histograms, and amplitude transmission maps is appended automatically.
-Set `preflightDir = diagnosticDir` to co-locate the report with runtime
-diagnostic frames.
+Set `preflightDir = diagnosticDir` to co-locate everything in one
+folder.
 
-You can also call it directly without launching a solve:
+**Opt out** for parameter sweeps or production runs where you don't
+need the imagery (and pay no overhead):
+
+```python
+params = SolverParams(..., diagnostic=False, preflight=False)
+```
+
+Pre-flight is also callable standalone, without running the solve:
 
 ```python
 from preflight import preflight_report
 preflight_report(initial_field, params, output_dir='./preflight',
                  scenario='Quick check')
 ```
-
-### Diagnostic imagery
-
-Runtime 3×3 PNG dashboards every N march steps plus an end-of-run summary
-report under `diagnosticDir`:
-
-```python
-params = SolverParams(..., diagnostic=True,
-                      diagnosticInterval=5,
-                      diagnosticDir='./run42_frames')
-angular_spectrum_solve(field, params)
-# → ./run42_frames/frame_NNNN.png    (per-step dashboards)
-# → ./run42_frames/summary/          (Isppa / MI / PNP / PPP cross-sections,
-#                                     boundaries.png, stability.png,
-#                                     harmonics.png, metrics.json)
-```
-
-`metrics.json` consolidates max Isppa, MI, peak focal location, boundary
-leakage fractions, stability margin, and runtime — useful as a single
-grep target across parameter sweeps.
 
 ### Time-of-flight extraction
 

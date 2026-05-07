@@ -42,11 +42,14 @@ def bowl_setup():
 
 
 def _make_params(b, **overrides):
+    # Smoke tests opt out of the default-on diagnostic + pre-flight
+    # pipelines so they stay fast and don't write side effects into cwd.
     base = dict(
         dX=b['dX'], dY=b['dY'], dT=b['dT'],
         c0=b['c0'], rho0=1000.0, beta=3.5, alpha0=-1, f0=b['f0'],
         propDist=5e-3, useSplitStep=True, useAdaptiveFiltering=True,
         dZmin=1e-3,
+        diagnostic=False, preflight=False,
     )
     base.update(overrides)
     return SolverParams(**base)
