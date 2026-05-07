@@ -10,16 +10,20 @@ A three-dimensional nonlinear acoustic propagation solver based on the modified 
 - **Immersed bowl sources**: Plane-by-plane source injection for spherical-bowl transducers (e.g., TIPS annular phased array)
 - **Enhanced absorbing boundaries**: Wendland C2 taper, frequency-weighted damping, and Engquist-Majda super-absorbing correction (2.4x reflection reduction)
 - **Intensity-loss tracking**: Spatially resolved absorbed-energy maps for radiation-force and thermal dose calculations
-- **GPU acceleration**: JAX-based implementation with JIT compilation
+- **GPU acceleration**: JAX-based implementation with JIT compilation; opt-in `useGPUReductions` keeps per-step reductions on the device, and `JAX_ENABLE_X64=0` switches to FP32 for parameter sweeps on workstation GPUs
+- **Diagnostic imagery**: Runtime 3×3 dashboards every N march steps and an end-of-run summary report (Isppa / MI / PNP / PPP cross-sections, harmonics-vs-z, boundary-leakage and stability checks, `metrics.json`)
+- **Pre-flight sanity report**: Single-page LaTeX/PDF report with grid / pulse / material / numerics tables and an IC panels figure, plus per-screen phase + amplitude maps when phase screens are configured
+- **Sub-sample TOF extraction**: Optional matched-filter-parabolic or envelope-based time-of-flight tracking per (x, y) at every z step
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.10+
 - JAX (with GPU support recommended)
 - NumPy
-- SciPy
-- Matplotlib
+- SciPy (for `tof_extraction`)
+- Matplotlib (for diagnostics + pre-flight)
 - h5py (for transcranial validation)
+- pdflatex (optional; pre-flight report falls back to `.tex` only when missing)
 
 ## Quick Start
 
@@ -62,6 +66,71 @@ source_planes, bowl_depth = make_bowl_source_planes(
 initial_field = source_planes[0][1]
 params.sourcePlanes = source_planes[1:]
 ```
+
+### Pre-flight sanity report
+
+A single-page LaTeX/PDF summary of the upcoming run (grid resolution, pulse
+spectrum, material constants, derived quantities like Goldberg number and
+shock-formation length, plus automatic warnings for under-resolved grids
+or pulses touching the time-window edge):
+
+```python
+params = SolverParams(..., preflight=True,
+                      preflightDir='./preflight',
+                      preflightScenario='Bowl R=46 mm, ROC=80 mm')
+angular_spectrum_solve(field, params)
+# → ./preflight/preflight.pdf  (+ preflight_panels.png, preflight.tex)
+```
+
+If `phaseScreens` is set, a second page with per-screen phase maps,
+histograms, and amplitude transmission maps is appended automatically.
+Set `preflightDir = diagnosticDir` to co-locate the report with runtime
+diagnostic frames.
+
+You can also call it directly without launching a solve:
+
+```python
+from preflight import preflight_report
+preflight_report(initial_field, params, output_dir='./preflight',
+                 scenario='Quick check')
+```
+
+### Diagnostic imagery
+
+Runtime 3×3 PNG dashboards every N march steps plus an end-of-run summary
+report under `diagnosticDir`:
+
+```python
+params = SolverParams(..., diagnostic=True,
+                      diagnosticInterval=5,
+                      diagnosticDir='./run42_frames')
+angular_spectrum_solve(field, params)
+# → ./run42_frames/frame_NNNN.png    (per-step dashboards)
+# → ./run42_frames/summary/          (Isppa / MI / PNP / PPP cross-sections,
+#                                     boundaries.png, stability.png,
+#                                     harmonics.png, metrics.json)
+```
+
+`metrics.json` consolidates max Isppa, MI, peak focal location, boundary
+leakage fractions, stability margin, and runtime — useful as a single
+grep target across parameter sweeps.
+
+### Time-of-flight extraction
+
+Per-(x, y) TOF tracked at every z step, useful for skull-induced delay
+analysis. Sub-sample-accurate matched-filter-parabolic mode requires a
+reference pulse and its envelope-peak time:
+
+```python
+out = angular_spectrum_solve(field, params,
+                             tof_ref_trace=ref_pulse,
+                             tof_t_ref_peak_s=t_peak_ref,
+                             taxis=taxis)
+*_, pax, tof = out  # 8-element return when TOF is enabled
+```
+
+Or pass `tof_env_ratio=1.0` for an envelope-based fallback (no reference
+needed).
 
 ## Validation
 
