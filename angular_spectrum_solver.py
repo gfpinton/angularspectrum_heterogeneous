@@ -14,6 +14,7 @@ Original MATLAB code by Gianmarco Pinton (2017-2023).
 Python port and refactoring 2024-2026.
 """
 
+import os
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -74,6 +75,37 @@ class SolverParams:
     phaseScreens: object = None  # list of (z_position, screen_array) tuples
     # --- distributed source injection (bowl transducer) ---
     sourcePlanes: object = None  # list of (z_position, field_slice) from make_bowl_source_planes
+    # --- diagnostic / validation imagery ---
+    # When ``diagnostic`` is True the solver writes runtime PNG dashboards
+    # every ``diagnosticInterval`` steps and a final summary report under
+    # ``diagnosticDir``. ``pdur`` (pulse duration, s) is used for the
+    # Isppa = pI * dT / (c0*rho0*pdur) conversion; if left None it is
+    # estimated from the analytic-signal envelope of the central trace.
+    diagnostic: bool = False
+    diagnosticInterval: int = 5
+    diagnosticDir: str = './diagnostic_frames'
+    diagnosticSummary: bool = True
+    diagnosticInitialConditions: bool = True
+    pdur: Optional[float] = None
+    # Pre-flight sanity report. When True, a single-page LaTeX/PDF report
+    # is generated under ``preflightDir`` (default: ``./preflight``). Set
+    # ``preflightDir = diagnosticDir`` to co-locate the report with the
+    # runtime diagnostic frames.
+    preflight: bool = False
+    preflightDir: str = './preflight'
+    preflightScenario: str = ''
+    preflightCompilePdf: bool = True
+    # --- performance: keep tracking-array reductions on the GPU ---
+    # When False (default) the per-step pnp/ppp/pI/pIloss/pax reductions
+    # and the stability-check max(|field|) are computed on the host after
+    # transferring the full (nX, nY, nT) field across PCIe. On large grids
+    # this is the dominant cost (~5 s/step at 600^3 on an A6000) and
+    # leaves the GPU idle.
+    # When True the reductions run on the GPU and only the small reduced
+    # arrays (and a single scalar for stability) are transferred back.
+    # Output shapes and contents are unchanged. Forced off internally when
+    # TOF extraction is requested, since TOF needs the full host field.
+    useGPUReductions: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -1030,16 +1062,20 @@ def make_bowl_source(xaxis, yaxis, taxis, f0, c0, p0,
     # Annular aperture
     aperture = ((r2 <= radius**2) & (r2 >= inner_radius**2)).astype(np.float32)
 
-    # Bowl surface depth: z_bowl(r) = R - sqrt(R² - r²), apex at z=0
-    r2_clipped = np.minimum(r2, R**2 - 1e-20)
-    z_bowl = R - np.sqrt(R**2 - r2_clipped)
-
-    # Distance from each bowl surface point to the focal point at (0, 0, focus)
-    dist_to_focus = np.sqrt(r2 + (focus - z_bowl)**2)
-
-    # Delays: invert so that outermost elements fire first (converging)
+    # Phase-correct flat-source focusing delays. The bowl is replaced by a
+    # virtual flat source at z=0 whose pixel-wise emission times make all
+    # wavefronts arrive coincidently at the focal point (0, 0, focus).
+    # Each pixel at (x, y, 0) traverses dist_flat = sqrt(r² + focus²) to
+    # reach the focus, so delays are computed from that distance.
+    #
+    # Note: an earlier version used the bowl-to-focus distance
+    # sqrt(r² + (focus - z_bowl)²). That formula degenerates when ROC ==
+    # focus (every bowl point is equidistant from the focal point, so all
+    # delays are equal and the source emits as a flat unfocused piston),
+    # and under-delays for ROC ≠ focus. flat_dist works for any ROC.
+    dist_flat = np.sqrt(r2 + focus ** 2)
     delays = np.zeros_like(r)
-    delays[aperture > 0] = dist_to_focus[aperture > 0] / c0
+    delays[aperture > 0] = dist_flat[aperture > 0] / c0
 
     # Average per element (matching FDTD approach)
     if n_elements > 1:
@@ -1280,7 +1316,11 @@ def angular_spectrum_solve(
                                     returned when ``tof_env_ratio`` is
                                     not ``None``.
     """
-    jax.config.update("jax_enable_x64", True)
+    # Honor JAX_ENABLE_X64 env var. FP64 is the default for accuracy, but
+    # Workstation/RTX GPUs (e.g. A6000) have ~32x lower FP64 throughput than
+    # FP32, so allow opting into FP32 for large parameter sweeps.
+    _use_x64 = os.environ.get('JAX_ENABLE_X64', '1').lower() not in ('0', 'false')
+    jax.config.update("jax_enable_x64", _use_x64)
 
     nX, nY, nT = initial_field.shape
     c0 = params.c0
@@ -1386,6 +1426,14 @@ def angular_spectrum_solve(
     # precedence when both are set.
     _tof_use_mf = tof_ref_trace is not None
     _tof_enabled = _tof_use_mf or (tof_env_ratio is not None)
+    # GPU-side reductions: opt-in for speed. Must fall back only when TOF
+    # is active (TOF needs the per-step host-side field). Diagnostic frame
+    # rendering pulls the full field independently every diagnosticInterval
+    # steps; that's a small periodic transfer that does not require host
+    # bookkeeping at every march step.
+    _gpu_reductions = params.useGPUReductions and not _tof_enabled
+    if params.useGPUReductions and verbose and not _gpu_reductions:
+        print('  useGPUReductions: forced OFF (incompatible with TOF)')
     if _tof_enabled:
         _tof_t = (np.asarray(taxis) if taxis is not None
                   else np.arange(nT, dtype=np.float64) * params.dT)
@@ -1405,6 +1453,41 @@ def angular_spectrum_solve(
     pax = np.zeros((nT, max_steps), dtype=np.float32)
     tof = np.zeros((nX, nY, max_steps), dtype=np.float32) if _tof_enabled else None
 
+    # --- pre-flight sanity report ---
+    if params.preflight:
+        from preflight import preflight_report
+        preflight_report(
+            np.asarray(initial_field, dtype=np.float32), params,
+            output_dir=params.preflightDir,
+            scenario=params.preflightScenario,
+            compile_pdf=params.preflightCompilePdf,
+            verbose=verbose)
+
+    # --- diagnostic plotting setup ---
+    if params.diagnostic:
+        from diagnostic_plotting import (
+            estimate_pulse_duration as _diag_pdur,
+            plot_runtime_frame as _diag_frame,
+            plot_summary_report as _diag_summary,
+            plot_initial_conditions as _diag_ic,
+            ensure_dir as _diag_mkdir,
+        )
+        _diag_mkdir(params.diagnosticDir)
+        _diag_max_amp = float(np.max(np.abs(initial_field)))
+        _diag_pdur_s = (params.pdur if params.pdur is not None
+                        else _diag_pdur(initial_field, params.dT))
+        if verbose:
+            print(f'[diagnostic] dir={params.diagnosticDir} '
+                  f'interval={params.diagnosticInterval} '
+                  f'pdur={_diag_pdur_s*1e6:.3f} μs')
+        if params.diagnosticInitialConditions:
+            _diag_ic(np.asarray(initial_field, dtype=np.float32),
+                     params.dX, params.dY, params.dT, params.diagnosticDir)
+        _diag_frame_count = 0
+        _diag_dZ_history = []
+        _diag_stab_margin = []
+        _diag_restart_steps = []  # list of (cc_at_violation, margin_value)
+
     field = jnp.array(initial_field, dtype=jnp.float32)
     zvec = []
     cc = 0
@@ -1415,13 +1498,32 @@ def angular_spectrum_solve(
         dZ_step = min(dZ, remaining)
 
         # --- current state and stability check ---
-        field_np = np.array(field)
-        max_field = np.max(np.abs(field_np))
-        if N * dZ_step / params.dT * max_field > params.stabilityThreshold:
+        if _gpu_reductions:
+            # Launch both reductions back-to-back on the device; the second
+            # kernel can overlap with the host's stability comparison and
+            # I_before stays on-device for the post-step pIloss computation.
+            max_abs_d = jnp.max(jnp.abs(field))
+            I_before_d = jnp.sum(field ** 2, axis=2)
+            max_field = float(max_abs_d)
+        else:
+            field_np = np.array(field)
+            max_field = np.max(np.abs(field_np))
+        _stab_margin = N * dZ_step / params.dT * max_field
+        if _stab_margin > params.stabilityThreshold:
             if verbose:
                 print('Stability criterion violated — reducing step size')
+            if params.diagnostic:
+                _diag_restart_steps.append((cc, float(_stab_margin)))
+            dZ_old = dZ
             dZ = params.stabilityRecoveryFactor * params.dT / (max_field * N)
-            dZ = max(dZ, params.dZmin)
+            # True numerical floor only — DO NOT clamp to dZmin (which is the
+            # initial dZ ceiling, not a true minimum). Clamping here causes
+            # the infinite restart loop when the safe dZ at the focal peak
+            # is smaller than the user's chosen initial dZ.
+            dZ = max(dZ, 1e-7)  # 0.1 µm hard floor
+            if verbose:
+                print(f'  shrink dZ {dZ_old*1e6:.1f}→{dZ*1e6:.2f} µm '
+                      f'(max|p|={max_field/1e6:.1f} MPa at z={sum(zvec)*1e3:.2f} mm)')
             cc = 0
             zvec = []
             field = jnp.array(initial_field, dtype=jnp.float32)
@@ -1436,13 +1538,19 @@ def angular_spectrum_solve(
             pax = np.zeros((nT, max_steps), dtype=np.float32)
             if _tof_enabled:
                 tof = np.zeros((nX, nY, max_steps), dtype=np.float32)
+            if params.diagnostic:
+                _diag_frame_count = 0
+                _diag_dZ_history = []
+                _diag_stab_margin = []
             continue
 
         if verbose:
             print(f'z = {sum(zvec) + dZ_step:.6f} m  (step {cc})')
 
         # --- propagate one step ---
-        I_before = np.sum(field_np ** 2, axis=2)
+        if not _gpu_reductions:
+            # GPU path computed I_before_d up at the stability launch.
+            I_before = np.sum(field_np ** 2, axis=2)
 
         step_ops = ops
         if abs(dZ_step - dZ) > 1e-15:
@@ -1526,13 +1634,29 @@ def angular_spectrum_solve(
                     if verbose:
                         print(f'  injected source plane at z = {sp_z*1e3:.2f} mm')
 
-        field_np_after = np.array(field)
-        I_after = np.sum(field_np_after ** 2, axis=2)
-        pIloss[:, :, cc] = np.maximum(0, I_before - I_after)
-        pI[:, :, cc] = I_after
-        pnp[:, :, cc] = np.min(field_np_after, axis=2)
-        ppp[:, :, cc] = np.max(field_np_after, axis=2)
-        pax[:, cc] = field_np_after[nX // 2, nY // 2, :]
+        if _gpu_reductions:
+            I_after_d = jnp.sum(field ** 2, axis=2)
+            pnp_d = jnp.min(field, axis=2)
+            ppp_d = jnp.max(field, axis=2)
+            pax_d = field[nX // 2, nY // 2, :]
+            pIloss_d = jnp.maximum(0, I_before_d - I_after_d)
+            # Batched device→host transfer: one sync instead of five np.array calls.
+            (pI[:, :, cc],
+             pIloss[:, :, cc],
+             pnp[:, :, cc],
+             ppp[:, :, cc],
+             pax[:, cc]) = jax.device_get(
+                (I_after_d, pIloss_d, pnp_d, ppp_d, pax_d))
+            if _tof_enabled:
+                field_np_after = np.array(field)  # TOF needs full field
+        else:
+            field_np_after = np.array(field)
+            I_after = np.sum(field_np_after ** 2, axis=2)
+            pIloss[:, :, cc] = np.maximum(0, I_before - I_after)
+            pI[:, :, cc] = I_after
+            pnp[:, :, cc] = np.min(field_np_after, axis=2)
+            ppp[:, :, cc] = np.max(field_np_after, axis=2)
+            pax[:, cc] = field_np_after[nX // 2, nY // 2, :]
         zvec.append(dZ_step)
 
         if _tof_enabled:
@@ -1547,6 +1671,21 @@ def angular_spectrum_solve(
         if per_step_callback is not None:
             per_step_callback(cc, sum(zvec), field)
 
+        if params.diagnostic:
+            _diag_dZ_history.append(float(dZ_step))
+            _diag_stab_margin.append(float(_stab_margin))
+
+        if params.diagnostic and (cc % params.diagnosticInterval == 0):
+            _diag_frame(
+                _diag_frame_count, cc, float(sum(zvec)),
+                np.asarray(field), pI[:, :, :cc + 1], pnp[:, :, :cc + 1],
+                np.asarray(zvec, dtype=np.float64),
+                params.dX, params.dY, params.dT,
+                c0, rho0, params.f0,
+                params.propDist, _diag_pdur_s, _diag_max_amp,
+                params.diagnosticDir)
+            _diag_frame_count += 1
+
         cc += 1
 
     elapsed = _time.time() - t0
@@ -1560,6 +1699,20 @@ def angular_spectrum_solve(
     pIloss = pIloss[:, :, :cc]
     pax = pax[:, :cc]
     zaxis = np.cumsum(zvec[:cc])
+
+    if params.diagnostic and params.diagnosticSummary and cc > 0:
+        _diag_summary(
+            np.asarray(field), np.asarray(initial_field, dtype=np.float32),
+            pnp, ppp, pI, pIloss, zaxis, pax,
+            params.dX, params.dY, params.dT,
+            c0, rho0, params.f0, _diag_pdur_s,
+            params.diagnosticDir,
+            boundary_factor=params.boundaryFactor,
+            stab_history=np.array(_diag_stab_margin, dtype=np.float64),
+            dZ_history=np.array(_diag_dZ_history, dtype=np.float64),
+            restart_events=list(_diag_restart_steps),
+            stab_threshold=params.stabilityThreshold,
+            elapsed_s=elapsed)
 
     if _tof_enabled:
         tof = tof[:, :, :cc]
