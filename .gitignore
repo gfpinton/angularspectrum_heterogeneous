@@ -12,6 +12,7 @@ build/
 .idea/
 .codex/
 .codex
+.claude/
 *.swp
 *.swo
 
