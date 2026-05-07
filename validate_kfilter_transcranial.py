@@ -135,6 +135,7 @@ def _run_config(setup, use_filter, use_screens, label):
     """Run one configuration (filter flag x screens on/off)."""
     print(f'\n=== Running: {label} ===')
     params = SolverParams(
+        diagnostic=False, preflight=False,
         dX=setup['dX'], dY=setup['dX'], dT=setup['dT'],
         c0=setup['c0'], rho0=setup['rho0'], beta=3.5,
         alpha0=0.5, attenPow=1, f0=setup['f0'],

@@ -268,6 +268,7 @@ def run_asm(mode='planes'):
         sp = source_planes_list[1:]
 
     params = SolverParams(
+        diagnostic=False, preflight=False,
         dX=dX, dY=dX, dT=dT,
         c0=C0, rho0=RHO0,
         beta=0.0,

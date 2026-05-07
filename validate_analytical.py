@@ -554,6 +554,7 @@ def test_focused_piston_config_sweep(nT=1201, dZ_factor=2, ncycles=4.0,
     for label, overrides in configs:
         print(f'\n--- config: {label} ---')
         params = SolverParams(
+            diagnostic=False, preflight=False,
             dX=dX, dY=dX, dT=dT, c0=c0, rho0=1000,
             beta=0.0, alpha0=-1, f0=f0, propDist=propDist,
             boundaryFactor=0.15, useBoundaryLayer=True,

@@ -512,6 +512,7 @@ def main():
         # --- Run ASM propagation with phase screens ---
         print(f'\nRunning ASM propagation with {len(screens)} phase screens...')
         params = SolverParams(
+            diagnostic=False, preflight=False,
             dX=dX, dY=dX, dT=dT, c0=c0, rho0=rho0, beta=3.5,
             alpha0=0.5, attenPow=1, f0=f0, propDist=domain_depth,
             boundaryFactor=0.12, useSplitStep=True,
@@ -531,6 +532,7 @@ def main():
         # --- Also run without skull for comparison ---
         print('\nRunning ASM propagation WITHOUT skull (homogeneous)...')
         params_homo = SolverParams(
+            diagnostic=False, preflight=False,
             dX=dX, dY=dX, dT=dT, c0=c0, rho0=rho0, beta=3.5,
             alpha0=0.5, attenPow=1, f0=f0, propDist=domain_depth,
             boundaryFactor=0.12, useSplitStep=True,

@@ -83,6 +83,7 @@ def _run_one(ppw, use_filter, f0, c0, rho0, a, F_foc, p0,
 
     propDist = 1.1 * F_foc
     params = SolverParams(
+        diagnostic=False, preflight=False,
         dX=dX, dY=dX, dT=dT, c0=c0, rho0=rho0,
         beta=0.0, alpha0=-1, f0=f0, propDist=propDist,
         useSplitStep=False, useTVD=False,

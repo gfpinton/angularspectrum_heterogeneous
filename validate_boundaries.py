@@ -118,6 +118,7 @@ def test_reflection():
     results = {}
     for label, kw in configs:
         params = SolverParams(
+            diagnostic=False, preflight=False,
             dX=dX, dY=dX, dT=dT, c0=c0, rho0=1000, beta=0.0,
             alpha0=-1, f0=f0, propDist=3e-2, boundaryFactor=0.15,
             useSplitStep=True, useAdaptiveFiltering=False, useTVD=False,
@@ -185,6 +186,7 @@ def test_freq_boundary():
 
         for bdy_label, use_fw in [('standard', False), ('freq_weighted', True)]:
             params = SolverParams(
+                diagnostic=False, preflight=False,
                 dX=dX, dY=dX, dT=dT, c0=c0, rho0=1000, beta=0.0,
                 alpha0=-1, f0=f0, propDist=2e-2, boundaryFactor=0.15,
                 useSplitStep=True, useAdaptiveFiltering=False, useTVD=False,
@@ -237,6 +239,7 @@ def test_super_absorbing():
     results = {}
     for s in strengths:
         params = SolverParams(
+            diagnostic=False, preflight=False,
             dX=dX, dY=dX, dT=dT, c0=c0, rho0=1000, beta=0.0,
             alpha0=-1, f0=f0, propDist=2e-2, boundaryFactor=0.15,
             useSplitStep=True, useAdaptiveFiltering=False, useTVD=False,
@@ -302,6 +305,7 @@ def test_combined():
     results = {}
     for label, kw in configs:
         params = SolverParams(
+            diagnostic=False, preflight=False,
             dX=dX, dY=dX, dT=dT, c0=c0, rho0=1000, beta=3.5,
             alpha0=0.5, attenPow=1, f0=f0, propDist=3e-2,
             boundaryFactor=0.15, useSplitStep=True,

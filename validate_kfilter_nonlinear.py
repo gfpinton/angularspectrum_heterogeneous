@@ -105,6 +105,7 @@ def run_nonlinear_shocked_focus(nT=1401, ncycles=6.0, p0=1.5e6, beta=3.5,
     for label, overrides in configs:
         print(f'\n--- {label} ---')
         params = SolverParams(
+            diagnostic=False, preflight=False,
             dX=dX, dY=dX, dT=dT, c0=c0, rho0=rho0,
             beta=beta, alpha0=-1, f0=f0, propDist=propDist,
             useSplitStep=True, useTVD=True,

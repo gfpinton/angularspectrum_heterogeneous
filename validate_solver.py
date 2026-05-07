@@ -84,6 +84,7 @@ def test_linear_propagation():
     results = {}
     for label, split in [('sequential', False), ('split_step', True)]:
         params = SolverParams(
+            diagnostic=False, preflight=False,
             dX=dX, dY=dX, dT=dT, c0=c0, rho0=1000, beta=0.0,
             alpha0=-1, f0=f0, propDist=2e-2, boundaryFactor=0.15,
             useSplitStep=split, useAdaptiveFiltering=False,
@@ -145,6 +146,7 @@ def test_nonlinear_comparison():
     results = {}
     for label, kw in configs:
         params = SolverParams(
+            diagnostic=False, preflight=False,
             dX=dX, dY=dX, dT=dT, c0=c0, rho0=1000, beta=3.5,
             alpha0=0.5, attenPow=1, f0=f0, propDist=3e-2,
             boundaryFactor=0.15,
@@ -203,6 +205,7 @@ def test_tvd_limiter():
     results = {}
     for label, use_tvd in [('no_tvd', False), ('tvd', True)]:
         params = SolverParams(
+            diagnostic=False, preflight=False,
             dX=dX, dY=dX, dT=dT, c0=c0, rho0=1000, beta=3.5,
             alpha0=0.5, attenPow=1, f0=f0, propDist=3e-2,
             boundaryFactor=0.15, useSplitStep=True,
@@ -299,6 +302,7 @@ def test_energy_tracking():
 
     # With attenuation
     params = SolverParams(
+        diagnostic=False, preflight=False,
         dX=dX, dY=dX, dT=dT, c0=c0, rho0=1000, beta=0.0,
         alpha0=0.5, attenPow=1, f0=f0, propDist=2e-2,
         boundaryFactor=0.15, useSplitStep=True,
@@ -313,6 +317,7 @@ def test_energy_tracking():
 
     # Without attenuation
     params_noatten = SolverParams(
+        diagnostic=False, preflight=False,
         dX=dX, dY=dX, dT=dT, c0=c0, rho0=1000, beta=0.0,
         alpha0=-1, f0=f0, propDist=2e-2,
         boundaryFactor=0.15, useSplitStep=True,
@@ -375,6 +380,7 @@ def test_convergence():
         results = {}
         for dZ_val in dZ_values:
             params = SolverParams(
+                diagnostic=False, preflight=False,
                 dX=dX, dY=dX, dT=dT, c0=c0, rho0=1000, beta=3.5,
                 alpha0=0.1, attenPow=1, f0=f0, propDist=1.5e-2,
                 boundaryFactor=0.15, useBoundaryLayer=False,
@@ -830,6 +836,7 @@ def test_attenuation_dispersion():
 
     # --- Run solver ---
     params = SolverParams(
+        diagnostic=False, preflight=False,
         dX=dX, dY=dX, dT=dT, c0=c0, rho0=rho0, beta=0.0,
         alpha0=alpha0, attenPow=pw, f0=f0, propDist=propDist,
         boundaryFactor=0.0, useBoundaryLayer=False,
