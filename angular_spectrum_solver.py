@@ -109,6 +109,20 @@ class SolverParams:
     # Output shapes and contents are unchanged. Forced off internally when
     # TOF extraction is requested, since TOF needs the full host field.
     useGPUReductions: bool = False
+    # --- physically-correct attenuation-only loss tracking ---
+    # When False (default, legacy), pIloss[:, :, cc] = max(0, I_before_step
+    # - I_after_step) per pixel, where I = ∫|p|² dt at z. This formula
+    # mixes true attenuation with diffractive lateral redistribution and
+    # then one-sidedly clips, so it is NOT a faithful local Q(r). It can
+    # be spiky on-axis (Fresnel-zone interference contributes apparent
+    # "loss") and discards energy gained at pixels where the wave focuses.
+    # When True, pIloss[:, :, cc] is computed from the attenuation step(s)
+    # ONLY: I_pre_atten - I_post_atten. This is the manuscript's local
+    # Q(r), per-pixel non-negative (modulo small obliquity cross-talk).
+    # Currently implemented for the split-step KT march (with/without
+    # nonlinearity-obliquity correction); other march variants fall back
+    # to the legacy formula with a printed warning.
+    useAttenLoss: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -1001,6 +1015,55 @@ def march_step_split_kt_obl(field, HH_half, abl_half, afilt3d_half,
 
 
 # ---------------------------------------------------------------------------
+# Loss-tracking variants of the split-step KT march. These compute the
+# per-pixel time-integrated intensity drop across each attenuation
+# half-step and return their sum as `loss_per_step`. This is the true
+# local Q(r) per propagation step — a non-negative dissipation measure
+# that does NOT mix with diffractive lateral redistribution.
+# ---------------------------------------------------------------------------
+@jit
+def march_step_split_kt_with_loss(field, HH_half, abl_half, afilt3d_half,
+                                  N, dZ, dT):
+    """Split-step KT march that also returns the attenuation loss per pixel.
+
+    The ``jnp.maximum(0, ...)`` guard on each half-step difference is a
+    float32-ULP clip. ``I_before - I_after`` across an attenuation step
+    is theoretically non-negative (Parseval + dispersion-is-unitary), but
+    where the true per-pixel loss is sub-ULP the summation order can
+    produce a tiny negative value.
+    """
+    I0 = jnp.sum(field ** 2, axis=2)
+    field = _attenuation_step(field, afilt3d_half)
+    I1 = jnp.sum(field ** 2, axis=2)
+    field = _angular_spectrum_step(field, HH_half, abl_half)
+    field = _kt_flux(field, N, dZ, dT)
+    field = _angular_spectrum_step(field, HH_half, abl_half)
+    I2 = jnp.sum(field ** 2, axis=2)
+    field = _attenuation_step(field, afilt3d_half)
+    I3 = jnp.sum(field ** 2, axis=2)
+    loss_per_step = jnp.maximum(0.0, I0 - I1) + jnp.maximum(0.0, I2 - I3)
+    return field, loss_per_step
+
+
+@jit
+def march_step_split_kt_obl_with_loss(field, HH_half, abl_half, afilt3d_half,
+                                       obl_map, N, dZ, dT):
+    """Same as march_step_split_kt_with_loss with nonlinearity-obliquity."""
+    I0 = jnp.sum(field ** 2, axis=2)
+    field = _attenuation_step(field, afilt3d_half)
+    I1 = jnp.sum(field ** 2, axis=2)
+    field = _angular_spectrum_step(field, HH_half, abl_half)
+    N_eff = N * _beam_obliquity_scalar(field, obl_map)
+    field = _kt_flux(field, N_eff, dZ, dT)
+    field = _angular_spectrum_step(field, HH_half, abl_half)
+    I2 = jnp.sum(field ** 2, axis=2)
+    field = _attenuation_step(field, afilt3d_half)
+    I3 = jnp.sum(field ** 2, axis=2)
+    loss_per_step = jnp.maximum(0.0, I0 - I1) + jnp.maximum(0.0, I2 - I3)
+    return field, loss_per_step
+
+
+# ---------------------------------------------------------------------------
 # Source generation helpers
 # ---------------------------------------------------------------------------
 def make_bowl_source(xaxis, yaxis, taxis, f0, c0, p0,
@@ -1437,6 +1500,18 @@ def angular_spectrum_solve(
     _gpu_reductions = params.useGPUReductions and not _tof_enabled
     if params.useGPUReductions and verbose and not _gpu_reductions:
         print('  useGPUReductions: forced OFF (incompatible with TOF)')
+    # Attenuation-loss accounting is only wired into the split-step KT
+    # march variants. Warn once if the user enabled it on an unsupported
+    # path; the per-step pIloss will silently fall back to the legacy
+    # max(0, I_before_step - I_after_step) formula.
+    _atten_loss_supported = (params.useAttenLoss and params.useSplitStep
+                             and params.fluxScheme == 'kt')
+    if params.useAttenLoss and verbose and not _atten_loss_supported:
+        print(f'  useAttenLoss: forced OFF (only supported for '
+              f'useSplitStep=True + fluxScheme="kt"; got '
+              f'useSplitStep={params.useSplitStep}, '
+              f'fluxScheme={params.fluxScheme!r}). '
+              f'Falling back to the legacy pIloss formula.')
     if _tof_enabled:
         _tof_t = (np.asarray(taxis) if taxis is not None
                   else np.arange(nT, dtype=np.float64) * params.dT)
@@ -1562,16 +1637,32 @@ def angular_spectrum_solve(
 
         use_obl_nl = params.useNonlinearityObliquity
         obl_map_op = ops.get('obl_map') if use_obl_nl else None
+        # Default: legacy march, attenuation loss recomputed via the
+        # (incorrect) max(0, I_before - I_after) formula below.
+        # When useAttenLoss is True and we are on the supported KT path,
+        # call the _with_loss variant instead and capture per-pixel
+        # attenuation loss directly.
+        atten_loss_step_d = None
         if params.useSplitStep:
             if params.fluxScheme == 'kt':
                 if use_obl_nl:
-                    field = march_step_split_kt_obl(
-                        field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
-                        obl_map_op, N, dZ_step, params.dT)
+                    if params.useAttenLoss:
+                        field, atten_loss_step_d = march_step_split_kt_obl_with_loss(
+                            field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
+                            obl_map_op, N, dZ_step, params.dT)
+                    else:
+                        field = march_step_split_kt_obl(
+                            field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
+                            obl_map_op, N, dZ_step, params.dT)
                 else:
-                    field = march_step_split_kt(
-                        field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
-                        N, dZ_step, params.dT)
+                    if params.useAttenLoss:
+                        field, atten_loss_step_d = march_step_split_kt_with_loss(
+                            field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
+                            N, dZ_step, params.dT)
+                    else:
+                        field = march_step_split_kt(
+                            field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
+                            N, dZ_step, params.dT)
             elif params.useTVD:
                 norm_step = dZ_step / (c0 / params.f0)
                 beta_tvd = max(1.0, 2.0 - params.adaptiveFilterStrength * norm_step * 10)
@@ -1642,7 +1733,13 @@ def angular_spectrum_solve(
             pnp_d = jnp.min(field, axis=2)
             ppp_d = jnp.max(field, axis=2)
             pax_d = field[nX // 2, nY // 2, :]
-            pIloss_d = jnp.maximum(0, I_before_d - I_after_d)
+            # If the _with_loss march variant ran, atten_loss_step_d holds
+            # the true per-pixel attenuation loss. Otherwise fall back to
+            # the (incorrect) max(0, I_before - I_after) formula.
+            if atten_loss_step_d is not None:
+                pIloss_d = atten_loss_step_d
+            else:
+                pIloss_d = jnp.maximum(0, I_before_d - I_after_d)
             # Batched device→host transfer: one sync instead of five np.array calls.
             (pI[:, :, cc],
              pIloss[:, :, cc],
@@ -1655,7 +1752,10 @@ def angular_spectrum_solve(
         else:
             field_np_after = np.array(field)
             I_after = np.sum(field_np_after ** 2, axis=2)
-            pIloss[:, :, cc] = np.maximum(0, I_before - I_after)
+            if atten_loss_step_d is not None:
+                pIloss[:, :, cc] = np.array(atten_loss_step_d)
+            else:
+                pIloss[:, :, cc] = np.maximum(0, I_before - I_after)
             pI[:, :, cc] = I_after
             pnp[:, :, cc] = np.min(field_np_after, axis=2)
             ppp[:, :, cc] = np.max(field_np_after, axis=2)
