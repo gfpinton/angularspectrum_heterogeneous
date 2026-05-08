@@ -123,6 +123,18 @@ class SolverParams:
     # nonlinearity-obliquity correction); other march variants fall back
     # to the legacy formula with a printed warning.
     useAttenLoss: bool = False
+    # --- cubic nonlinearity (shear-shock regime) ---
+    # When 2 (default), the solver uses the standard quadratic Burgers
+    # operator with coefficient N = β/(2·c₀³·ρ₀) — appropriate for
+    # longitudinal acoustic waves in fluids/soft tissue. When 3, the
+    # solver uses the cubic Burgers operator ∂p/∂z = -N₃·∂(p³)/∂t with
+    # coefficient N₃ = β₃/(3·c₀⁵·ρ₀²). Cubic nonlinearity dominates for
+    # transverse (shear) waves where β₃ ~ 100--200 in soft tissue
+    # (Catheline 2003, Gennisson 2007). Shock formation distance is
+    # 1/(β₃·M²·k₀) — much shorter than for longitudinal waves at the same
+    # Mach number, so a sub-wavelength shock is typical for shear.
+    nonlinearityOrder: int = 2
+    beta3: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -918,6 +930,141 @@ def _kt_flux_minmod(field, N, dZ, dT):
 
 
 # ---------------------------------------------------------------------------
+# Cubic-Burgers flux kernels — for shear-shock simulations.
+# The cubic-Burgers equation is ∂p/∂z = -N₃ ∂(p³)/∂t with conservation
+# form flux f(u) = -u³/3 and characteristic speed λ(u) = -u² (always
+# non-positive; cubic Burgers admits compound waves at u=0 sonic point).
+# Used when SolverParams.nonlinearityOrder == 3.
+# Coefficient convention: N₃ = β₃ / (3 c₀⁵ ρ₀²) for shear cubic.
+# ---------------------------------------------------------------------------
+@jit
+def _rusanov_flux_standard_cubic(field, N3, dZ, dT):
+    """Standard Rusanov flux, cubic Burgers (no TVD limiting)."""
+    lambdahalf = jnp.maximum(field[:, :, :-1] ** 2, field[:, :, 1:] ** 2)
+    fluxhalf = -(field[:, :, :-1] ** 3 + field[:, :, 1:] ** 3) / 3 - \
+               lambdahalf * (field[:, :, 1:] - field[:, :, :-1])
+    flux_diff = fluxhalf[:, :, 1:] - fluxhalf[:, :, :-1]
+    return field.at[:, :, 1:-1].add(-N3 * dZ / dT * flux_diff)
+
+
+@jit
+def _rusanov_flux_tvd_cubic(field, N3, dZ, dT, beta_tvd):
+    """Cubic-Burgers Rusanov flux with TVD generalized minmod limiting."""
+    uL = field[:, :, :-1]
+    uR = field[:, :, 1:]
+    a = jnp.maximum(uL ** 2, uR ** 2)
+    fluxhalf = 0.5 * (-(uL ** 3 + uR ** 3) / 3) - 0.5 * a * (uR - uL)
+
+    flux_diff = fluxhalf[:, :, 1:] - fluxhalf[:, :, :-1]
+
+    delta_minus = field[:, :, 1:-1] - field[:, :, :-2]
+    delta_plus = field[:, :, 2:] - field[:, :, 1:-1]
+
+    eps = 1e-30
+    r = delta_plus / (delta_minus + eps * jnp.sign(delta_minus + eps))
+    r_inv = delta_minus / (delta_plus + eps * jnp.sign(delta_plus + eps))
+
+    phi_plus = jnp.maximum(0.0, jnp.minimum(jnp.minimum(beta_tvd * r, 1.0),
+                                              jnp.minimum(r, beta_tvd)))
+    phi_minus = jnp.maximum(0.0, jnp.minimum(jnp.minimum(beta_tvd * r_inv, 1.0),
+                                               jnp.minimum(r_inv, beta_tvd)))
+
+    limited_flux = 0.5 * (phi_plus + phi_minus) * flux_diff
+    return field.at[:, :, 1:-1].add(-N3 * dZ / dT * limited_flux)
+
+
+@jit
+def _kt_rhs_cubic(field, N3, dT):
+    """KT RHS for cubic Burgers with MUSCL-MC reconstruction and a
+    sonic-point fix.
+
+    The cubic flux f(u) = -u³/3 has wave speed f'(u) = -u² that is
+    sonic (zero) at u=0.  The plain KT central-upwind formula
+    degenerates whenever the MUSCL-reconstructed cell-edge states
+    straddle u=0: the a⁺ - a⁻ denominator collapses, and the standard
+    Lax-Friedrichs fallback over-dissipates the resulting compound
+    waves (visible as a 6× error penalty on the cubic Riemann Test C
+    relative to plain Rusanov).
+
+    Fix: at sonic-detected faces (sign(u_minus) ≠ sign(u_plus), or the
+    KT denominator near zero) revert to a plain cell-centre Rusanov
+    flux, which has the right entropy behaviour through the sonic
+    point without LF dissipation.  Smooth-region faces keep the
+    second-order KT-MUSCL flux, preserving second-order convergence
+    everywhere except in the O(1)-cell sonic neighbourhood where the
+    underlying solution is already first-order at best.
+    """
+    delta_minus = field[:, :, 1:-1] - field[:, :, :-2]
+    delta_plus = field[:, :, 2:] - field[:, :, 1:-1]
+    sigma_mid = _mc_limiter(delta_minus, delta_plus)
+    sigma = jnp.pad(sigma_mid, ((0, 0), (0, 0), (1, 1)))
+
+    u_minus = field[:, :, :-1] + 0.5 * sigma[:, :, :-1]
+    u_plus = field[:, :, 1:] - 0.5 * sigma[:, :, 1:]
+
+    # Local wave speeds for cubic Burgers: f'(u) = -u² ≤ 0.
+    a_plus = jnp.maximum(jnp.maximum(-(u_minus ** 2), -(u_plus ** 2)), 0.0)
+    a_minus = jnp.minimum(jnp.minimum(-(u_minus ** 2), -(u_plus ** 2)), 0.0)
+
+    f_minus = -(u_minus ** 3) / 3.0
+    f_plus = -(u_plus ** 3) / 3.0
+
+    denom = a_plus - a_minus
+    safe_denom = jnp.where(jnp.abs(denom) < 1e-14, 1.0, denom)
+    kt_flux = (
+        a_plus * f_minus
+        - a_minus * f_plus
+        - a_plus * a_minus * (u_plus - u_minus)
+    ) / safe_denom
+
+    # Sonic-fix: cell-centre Rusanov flux at the KT scaling convention
+    # (factor 1/2 in front of the symmetric central term and dissipation,
+    # matching the KT smooth-limit flux scale of -u³/3 rather than the
+    # _rusanov_flux_standard_cubic convention of -2u³/3).  Triggered when
+    # the reconstructed states straddle u=0 (sign change) or the KT
+    # denominator collapses.  Cell-centre (not MUSCL) values are used so
+    # the symmetric flux can't itself produce a sonic crossing inside the
+    # sub-cell reconstruction.
+    uL_c = field[:, :, :-1]
+    uR_c = field[:, :, 1:]
+    a_rus = jnp.maximum(uL_c ** 2, uR_c ** 2)
+    rus_flux = 0.5 * (-(uL_c ** 3 + uR_c ** 3) / 3.0) - 0.5 * a_rus * (uR_c - uL_c)
+
+    # Sonic detection: trigger on the MUSCL-reconstructed states straddling
+    # u=0, the cell-centre states straddling u=0, or the KT denominator
+    # collapsing.  Expand by one face to each side: faces immediately
+    # adjacent to a sonic crossing are also handled with the more dissipative
+    # Rusanov flux to suppress MUSCL artefacts that bleed into the rarefaction
+    # region (the rarefaction-over-prediction observed on cubic Riemann
+    # Test C, where the sqrt-shaped fan is sharpened above the analytical
+    # solution by KT's near-zero smooth-limit dissipation).
+    sonic_face0 = ((u_minus * u_plus < 0.0)
+                   | (uL_c * uR_c < 0.0)
+                   | (jnp.abs(denom) < 1e-14))
+    sonic_face_left = jnp.pad(sonic_face0[:, :, 1:],
+                              ((0, 0), (0, 0), (0, 1)),
+                              constant_values=False)
+    sonic_face_right = jnp.pad(sonic_face0[:, :, :-1],
+                               ((0, 0), (0, 0), (1, 0)),
+                               constant_values=False)
+    sonic_face = sonic_face0 | sonic_face_left | sonic_face_right
+    fluxhalf = jnp.where(sonic_face, rus_flux, kt_flux)
+
+    flux_diff = fluxhalf[:, :, 1:] - fluxhalf[:, :, :-1]
+    rhs = jnp.zeros_like(field)
+    return rhs.at[:, :, 1:-1].set(-N3 / dT * flux_diff)
+
+
+@jit
+def _kt_flux_cubic(field, N3, dZ, dT):
+    """Second-order KT cubic-Burgers step with SSP-RK2 integration in z."""
+    rhs0 = _kt_rhs_cubic(field, N3, dT)
+    stage1 = field + dZ * rhs0
+    rhs1 = _kt_rhs_cubic(stage1, N3, dT)
+    return 0.5 * field + 0.5 * (stage1 + dZ * rhs1)
+
+
+# ---------------------------------------------------------------------------
 # Composite march steps
 # ---------------------------------------------------------------------------
 @jit
@@ -1055,6 +1202,103 @@ def march_step_split_kt_obl_with_loss(field, HH_half, abl_half, afilt3d_half,
     field = _angular_spectrum_step(field, HH_half, abl_half)
     N_eff = N * _beam_obliquity_scalar(field, obl_map)
     field = _kt_flux(field, N_eff, dZ, dT)
+    field = _angular_spectrum_step(field, HH_half, abl_half)
+    I2 = jnp.sum(field ** 2, axis=2)
+    field = _attenuation_step(field, afilt3d_half)
+    I3 = jnp.sum(field ** 2, axis=2)
+    loss_per_step = jnp.maximum(0.0, I0 - I1) + jnp.maximum(0.0, I2 - I3)
+    return field, loss_per_step
+
+
+# ---------------------------------------------------------------------------
+# Cubic-Burgers march variants (used when SolverParams.nonlinearityOrder=3).
+# Each is a one-line variant of the corresponding quadratic march step:
+# the inner _kt_flux / _rusanov_flux_* call is swapped for its cubic
+# counterpart, and the coefficient is the cubic N₃ instead of the
+# quadratic N. Strang splitting and obliquity correction are unchanged.
+# ---------------------------------------------------------------------------
+@jit
+def march_step_sequential_cubic(field, HH, abl, afilt3d, N3, dZ, dT):
+    field = _angular_spectrum_step(field, HH, abl)
+    field = _rusanov_flux_standard_cubic(field, N3, dZ, dT)
+    field = _attenuation_step(field, afilt3d)
+    return field
+
+
+@jit
+def march_step_split_standard_cubic(field, HH_half, abl_half, afilt3d_half,
+                                     N3, dZ, dT):
+    field = _attenuation_step(field, afilt3d_half)
+    field = _angular_spectrum_step(field, HH_half, abl_half)
+    field = _rusanov_flux_standard_cubic(field, N3, dZ, dT)
+    field = _angular_spectrum_step(field, HH_half, abl_half)
+    field = _attenuation_step(field, afilt3d_half)
+    return field
+
+
+@partial(jit, static_argnums=())
+def march_step_split_tvd_cubic(field, HH_half, abl_half, afilt3d_half,
+                                N3, dZ, dT, beta_tvd):
+    field = _attenuation_step(field, afilt3d_half)
+    field = _angular_spectrum_step(field, HH_half, abl_half)
+    field = _rusanov_flux_tvd_cubic(field, N3, dZ, dT, beta_tvd)
+    field = _angular_spectrum_step(field, HH_half, abl_half)
+    field = _attenuation_step(field, afilt3d_half)
+    return field
+
+
+@jit
+def march_step_split_kt_cubic(field, HH_half, abl_half, afilt3d_half,
+                               N3, dZ, dT):
+    field = _attenuation_step(field, afilt3d_half)
+    field = _angular_spectrum_step(field, HH_half, abl_half)
+    field = _kt_flux_cubic(field, N3, dZ, dT)
+    field = _angular_spectrum_step(field, HH_half, abl_half)
+    field = _attenuation_step(field, afilt3d_half)
+    return field
+
+
+@jit
+def march_step_split_kt_obl_cubic(field, HH_half, abl_half, afilt3d_half,
+                                   obl_map, N3, dZ, dT):
+    """Cubic KT split-step with beam-averaged nonlinearity-obliquity."""
+    field = _attenuation_step(field, afilt3d_half)
+    field = _angular_spectrum_step(field, HH_half, abl_half)
+    N3_eff = N3 * _beam_obliquity_scalar(field, obl_map)
+    field = _kt_flux_cubic(field, N3_eff, dZ, dT)
+    field = _angular_spectrum_step(field, HH_half, abl_half)
+    field = _attenuation_step(field, afilt3d_half)
+    return field
+
+
+@jit
+def march_step_split_kt_with_loss_cubic(field, HH_half, abl_half, afilt3d_half,
+                                         N3, dZ, dT):
+    """Cubic KT split-step that also returns true per-pixel attenuation loss."""
+    I0 = jnp.sum(field ** 2, axis=2)
+    field = _attenuation_step(field, afilt3d_half)
+    I1 = jnp.sum(field ** 2, axis=2)
+    field = _angular_spectrum_step(field, HH_half, abl_half)
+    field = _kt_flux_cubic(field, N3, dZ, dT)
+    field = _angular_spectrum_step(field, HH_half, abl_half)
+    I2 = jnp.sum(field ** 2, axis=2)
+    field = _attenuation_step(field, afilt3d_half)
+    I3 = jnp.sum(field ** 2, axis=2)
+    loss_per_step = jnp.maximum(0.0, I0 - I1) + jnp.maximum(0.0, I2 - I3)
+    return field, loss_per_step
+
+
+@jit
+def march_step_split_kt_obl_with_loss_cubic(field, HH_half, abl_half,
+                                             afilt3d_half, obl_map,
+                                             N3, dZ, dT):
+    """Cubic KT split-step with obliquity, returning attenuation loss."""
+    I0 = jnp.sum(field ** 2, axis=2)
+    field = _attenuation_step(field, afilt3d_half)
+    I1 = jnp.sum(field ** 2, axis=2)
+    field = _angular_spectrum_step(field, HH_half, abl_half)
+    N3_eff = N3 * _beam_obliquity_scalar(field, obl_map)
+    field = _kt_flux_cubic(field, N3_eff, dZ, dT)
     field = _angular_spectrum_step(field, HH_half, abl_half)
     I2 = jnp.sum(field ** 2, axis=2)
     field = _attenuation_step(field, afilt3d_half)
@@ -1391,13 +1635,23 @@ def angular_spectrum_solve(
     nX, nY, nT = initial_field.shape
     c0 = params.c0
     rho0 = params.rho0
-    N = params.beta / (2 * c0 ** 3 * rho0)
+    # Nonlinear coefficient. nonlinearityOrder=2 → quadratic Burgers
+    # (longitudinal); =3 → cubic Burgers (shear-shock regime).
+    if params.nonlinearityOrder == 3:
+        N = params.beta3 / (3 * c0 ** 5 * rho0 ** 2)
+    else:
+        N = params.beta / (2 * c0 ** 3 * rho0)
+    _cubic = (params.nonlinearityOrder == 3)
     alpha0_eff = params.alpha0
     pw = params.attenPow
 
     # --- initial step-size estimate ---
     max_amp = np.max(np.abs(initial_field))
-    dZ = min(params.stabilityRecoveryFactor * params.dT / (max_amp * N + 1e-30),
+    # Stability-margin amplitude factor: max|p| for quadratic, max|p|² for
+    # cubic (since cubic Burgers has λ(u)=u², so the CFL is N₃·dZ·u²/dT).
+    amp_factor_init = max_amp ** 2 if _cubic else max_amp
+    dZ = min(params.stabilityRecoveryFactor * params.dT
+             / (amp_factor_init * N + 1e-30),
              params.dZmin) if max_amp > 0 else params.dZmin
     dZ = max(dZ, params.dZmin)
 
@@ -1586,14 +1840,18 @@ def angular_spectrum_solve(
         else:
             field_np = np.array(field)
             max_field = np.max(np.abs(field_np))
-        _stab_margin = N * dZ_step / params.dT * max_field
+        # CFL margin: for quadratic Burgers λ(u)=u → factor of |u|;
+        # for cubic Burgers λ(u)=u² → factor of u². The same recovery
+        # formula is used to pick the next dZ when the margin is exceeded.
+        amp_factor = max_field ** 2 if _cubic else max_field
+        _stab_margin = N * dZ_step / params.dT * amp_factor
         if _stab_margin > params.stabilityThreshold:
             if verbose:
                 print('Stability criterion violated — reducing step size')
             if params.diagnostic:
                 _diag_restart_steps.append((cc, float(_stab_margin)))
             dZ_old = dZ
-            dZ = params.stabilityRecoveryFactor * params.dT / (max_field * N)
+            dZ = params.stabilityRecoveryFactor * params.dT / (amp_factor * N)
             # True numerical floor only — DO NOT clamp to dZmin (which is the
             # initial dZ ceiling, not a true minimum). Clamping here causes
             # the infinite restart loop when the safe dZ at the focal peak
@@ -1642,54 +1900,83 @@ def angular_spectrum_solve(
         # When useAttenLoss is True and we are on the supported KT path,
         # call the _with_loss variant instead and capture per-pixel
         # attenuation loss directly.
+        # When _cubic is True (cubic Burgers), select the cubic-flux
+        # variant of each march step. Cubic + obl + (TVD or standard)
+        # combinations are not implemented and raise an error if requested.
         atten_loss_step_d = None
         if params.useSplitStep:
             if params.fluxScheme == 'kt':
                 if use_obl_nl:
                     if params.useAttenLoss:
-                        field, atten_loss_step_d = march_step_split_kt_obl_with_loss(
+                        _fn = (march_step_split_kt_obl_with_loss_cubic
+                               if _cubic else march_step_split_kt_obl_with_loss)
+                        field, atten_loss_step_d = _fn(
                             field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
                             obl_map_op, N, dZ_step, params.dT)
                     else:
-                        field = march_step_split_kt_obl(
+                        _fn = (march_step_split_kt_obl_cubic
+                               if _cubic else march_step_split_kt_obl)
+                        field = _fn(
                             field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
                             obl_map_op, N, dZ_step, params.dT)
                 else:
                     if params.useAttenLoss:
-                        field, atten_loss_step_d = march_step_split_kt_with_loss(
+                        _fn = (march_step_split_kt_with_loss_cubic
+                               if _cubic else march_step_split_kt_with_loss)
+                        field, atten_loss_step_d = _fn(
                             field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
                             N, dZ_step, params.dT)
                     else:
-                        field = march_step_split_kt(
+                        _fn = (march_step_split_kt_cubic
+                               if _cubic else march_step_split_kt)
+                        field = _fn(
                             field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
                             N, dZ_step, params.dT)
             elif params.useTVD:
                 norm_step = dZ_step / (c0 / params.f0)
                 beta_tvd = max(1.0, 2.0 - params.adaptiveFilterStrength * norm_step * 10)
                 if use_obl_nl:
+                    if _cubic:
+                        raise NotImplementedError(
+                            'Cubic Burgers + TVD + obliquity is not implemented; '
+                            'use fluxScheme="kt" or set useNonlinearityObliquity=False.')
                     field = march_step_split_tvd_obl(
                         field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
                         obl_map_op, N, dZ_step, params.dT, beta_tvd)
                 else:
-                    field = march_step_split_tvd(
+                    _fn = (march_step_split_tvd_cubic
+                           if _cubic else march_step_split_tvd)
+                    field = _fn(
                         field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
                         N, dZ_step, params.dT, beta_tvd)
             else:
                 if use_obl_nl:
+                    if _cubic:
+                        raise NotImplementedError(
+                            'Cubic Burgers + standard-flux + obliquity is not implemented; '
+                            'use fluxScheme="kt" or set useNonlinearityObliquity=False.')
                     field = march_step_split_standard_obl(
                         field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
                         obl_map_op, N, dZ_step, params.dT)
                 else:
-                    field = march_step_split_standard(
+                    _fn = (march_step_split_standard_cubic
+                           if _cubic else march_step_split_standard)
+                    field = _fn(
                         field, step_ops['HH_half'], step_ops['abl_half'], step_ops['afilt3d_half'],
                         N, dZ_step, params.dT)
         else:
             if use_obl_nl:
+                if _cubic:
+                    raise NotImplementedError(
+                        'Cubic Burgers + sequential + obliquity is not implemented; '
+                        'use useSplitStep=True or set useNonlinearityObliquity=False.')
                 field = march_step_sequential_obl(
                     field, step_ops['HH'], step_ops['abl'], step_ops['afilt3d'],
                     obl_map_op, N, dZ_step, params.dT)
             else:
-                field = march_step_sequential(
+                _fn = (march_step_sequential_cubic
+                       if _cubic else march_step_sequential)
+                field = _fn(
                     field, step_ops['HH'], step_ops['abl'], step_ops['afilt3d'],
                     N, dZ_step, params.dT)
 

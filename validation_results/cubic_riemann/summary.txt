@@ -1,0 +1,18 @@
+Cubic-Burgers Riemann validation
+================================
+
+
+Test A: u_L=0.0, u_R=1.0
+  rusanov       : L² = 0.00817
+  rusanov_tvd   : L² = 0.15708
+  kt            : L² = 0.00557
+
+Test B: u_L=1.0, u_R=0.0
+  rusanov       : L² = 0.00178
+  rusanov_tvd   : L² = 0.20640
+  kt            : L² = 0.00046
+
+Test C: u_L=1.0, u_R=-1.0
+  rusanov       : L² = 0.01229
+  rusanov_tvd   : L² = 0.51837
+  kt            : L² = 0.02643
