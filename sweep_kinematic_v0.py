@@ -41,6 +41,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 from angular_spectrum_solver import (
     SolverParams, angular_spectrum_solve, make_bowl_source,
 )
+from cubic_setup import (
+    cubic_dzmin, cubic_kt_params, expected_focal_peak_bowl,
+)
 from kinematic_analyzer import summarize, area_above_threshold
 
 
@@ -141,13 +144,8 @@ def run_one(v0: float, out_dir: str, enable_diagnostic: bool = False):
         radius=OUTER_R, roc=ROC, focus=FOCUS,
         ncycles=NCYCLES, dur=DUR,
     )
-    N3 = BETA3 / (3 * C0**5 * RHO0**2)
-    k0 = 2 * np.pi * F0 / C0
-    focus_gain = k0 * OUTER_R**2 / (2 * FOCUS)
-    expected_peak = max(v0 * focus_gain, v0)
-    safe_dZ = 0.15 * DT / max(expected_peak**2 * N3, 1e-30)
-    dZmin = max(0.25 * safe_dZ, DT * C0 / 4.0)
-    dZmin = min(dZmin, LAM / 10.0)
+    expected_peak = expected_focal_peak_bowl(v0, F0, C0, OUTER_R, FOCUS)
+    dZmin = cubic_dzmin(expected_peak, DT, C0, LAM, BETA3, RHO0)
     diag_kwargs = {}
     if enable_diagnostic:
         diag_dir = os.path.join(out_dir, 'as_diagnostic_frames')
@@ -160,17 +158,10 @@ def run_one(v0: float, out_dir: str, enable_diagnostic: bool = False):
             diagnosticInitialConditions=True,
         )
 
-    sp = SolverParams(
-        dX=DX, dY=DX, dT=DT, c0=C0, rho0=RHO0,
-        beta=0.0, beta3=BETA3, nonlinearityOrder=3,
-        alpha0=ALPHA0, attenPow=Y, f0=F0,
-        propDist=PROP_DIST,
-        useSplitStep=True, fluxScheme='kt', useTVD=True,
-        useAdaptiveFiltering=True,
-        boundaryProfile='quadratic',
-        useFreqWeightedBoundary=False,
-        useSuperAbsorbing=False, boundaryFactor=0.15,
-        dZmin=dZmin, useGPUReductions=False, useAttenLoss=True,
+    sp = cubic_kt_params(
+        dX=DX, dT=DT, c0=C0, rho0=RHO0,
+        beta3=BETA3, alpha0=ALPHA0, attenPow=Y, f0=F0,
+        propDist=PROP_DIST, dZmin=dZmin, useAttenLoss=True,
         **diag_kwargs,
     )
 

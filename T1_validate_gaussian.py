@@ -43,6 +43,9 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(__file__))
 from angular_spectrum_solver import SolverParams, angular_spectrum_solve
+from cubic_setup import (
+    cubic_dzmin, cubic_kt_params, expected_focal_peak_gaussian,
+)
 from make_gaussian_source import make_gaussian_source
 from kinematic_analyzer import (
     kinematic_fields, lateral_2d_maps, area_above_threshold, fwhm,
@@ -112,27 +115,13 @@ def run_one(v0: float, linear: bool, cache_path: str):
         atten_loss = True
 
     # dZmin (conservative; smaller for nonlinear)
-    N3 = BETA3 / (3 * C0**5 * RHO0**2) if not linear else 0.0
-    k0 = 2 * np.pi * F0 / C0
-    # Gaussian focal gain ≈ k0·w_src²/F (paraxial Fraunhofer)
-    focus_gain = k0 * WAIST_SRC**2 / FOCUS
-    expected_peak = max(v0 * focus_gain, v0)
-    safe_dZ = 0.15 * DT / max(expected_peak**2 * N3, 1e-30) if not linear \
-              else LAM / 10.0
-    dZmin = max(0.25 * safe_dZ, DT * C0 / 4.0)
-    dZmin = min(dZmin, LAM / 10.0)
+    expected_peak = expected_focal_peak_gaussian(v0, F0, C0, WAIST_SRC, FOCUS)
+    dZmin = cubic_dzmin(expected_peak, DT, C0, LAM, BETA3, RHO0, linear=linear)
 
-    sp = SolverParams(
-        dX=DX, dY=DX, dT=DT, c0=C0, rho0=RHO0,
-        beta=0.0, beta3=beta3_use, nonlinearityOrder=3,
-        alpha0=alpha0_use, attenPow=Y_ABS, f0=F0,
-        propDist=PROP_DIST,
-        useSplitStep=True, fluxScheme='kt', useTVD=True,
-        useAdaptiveFiltering=True,
-        boundaryProfile='quadratic',
-        useFreqWeightedBoundary=False,
-        useSuperAbsorbing=False, boundaryFactor=0.15,
-        dZmin=dZmin, useGPUReductions=False, useAttenLoss=atten_loss,
+    sp = cubic_kt_params(
+        dX=DX, dT=DT, c0=C0, rho0=RHO0,
+        beta3=beta3_use, alpha0=alpha0_use, attenPow=Y_ABS, f0=F0,
+        propDist=PROP_DIST, dZmin=dZmin, useAttenLoss=atten_loss,
     )
     t0 = time.time()
     field, _, _, pI, _, zaxis, _ = angular_spectrum_solve(

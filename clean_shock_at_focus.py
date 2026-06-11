@@ -64,6 +64,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 from angular_spectrum_solver import (
     SolverParams, angular_spectrum_solve, make_bowl_source_planes,
 )
+from cubic_setup import (
+    cubic_dzmin, cubic_kt_params, expected_focal_peak_bowl,
+)
 
 # ---- Physical regime ----
 F0      = 100.0
@@ -205,27 +208,15 @@ def run(v0=V0_DEFAULT):
     inject_planes = source_planes[1:]
 
     # ---- Solver params ----
-    N3 = BETA3 / (3 * C0**5 * RHO0**2)
-    k0 = 2 * np.pi * F0 / C0
-    focus_gain = k0 * OUTER_R**2 / (2 * FOCUS)
-    expected_peak = max(v0 * focus_gain, v0)
-    safe_dZ = 0.15 * DT / max(expected_peak**2 * N3, 1e-30)
-    dZmin = max(0.25 * safe_dZ, DT * C0 / 4.0)
-    dZmin = min(dZmin, LAM / 10.0)
+    expected_peak = expected_focal_peak_bowl(v0, F0, C0, OUTER_R, FOCUS)
+    dZmin = cubic_dzmin(expected_peak, DT, C0, LAM, BETA3, RHO0)
     print(f'\ndZmin = {dZmin*1e3:.3f} mm  (expected V_focal ≈ '
           f'{expected_peak:.4f} m/s)')
 
-    sp = SolverParams(
-        dX=DX, dY=DX, dT=DT, c0=C0, rho0=RHO0,
-        beta=0.0, beta3=BETA3, nonlinearityOrder=3,
-        alpha0=ALPHA0, attenPow=Y_ABS, f0=F0,
-        propDist=PROP_DIST,
-        useSplitStep=True, fluxScheme='kt', useTVD=True,
-        useAdaptiveFiltering=True,
-        boundaryProfile='quadratic',
-        useFreqWeightedBoundary=False,
-        useSuperAbsorbing=False, boundaryFactor=0.15,
-        dZmin=dZmin, useGPUReductions=False, useAttenLoss=True,
+    sp = cubic_kt_params(
+        dX=DX, dT=DT, c0=C0, rho0=RHO0,
+        beta3=BETA3, alpha0=ALPHA0, attenPow=Y_ABS, f0=F0,
+        propDist=PROP_DIST, dZmin=dZmin, useAttenLoss=True,
         sourcePlanes=inject_planes,
         # AS validation flag ON
         diagnostic=True,
