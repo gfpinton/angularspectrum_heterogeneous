@@ -161,4 +161,4 @@ G.F. Pinton, "An Angular Spectrum Method for Nonlinear Propagation in Heterogene
 
 ## License
 
-This project is licensed under the GNU Lesser General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
+Licensed under the Apache License, Version 2.0. See the [LICENSE](LICENSE) and [NOTICE](NOTICE) files for the full text and the required attribution notice.
