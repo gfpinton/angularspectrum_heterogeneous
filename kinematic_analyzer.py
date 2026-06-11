@@ -22,6 +22,7 @@ This module has no external dependencies beyond numpy/matplotlib.
 from __future__ import annotations
 import json
 import os
+import warnings
 import numpy as np
 
 
@@ -183,6 +184,15 @@ def summarize(field, dt, dx, f0, xaxis):
             else float('nan')
         for k in areas if k != 'pI'
     }
+
+    # NaN FWHMs/areas (degenerate profile or <2 half-max crossings) are
+    # kept in the output so JSON schemas stay stable, but warn so a failed
+    # extraction can't slip silently into downstream sweeps.
+    bad = sorted([f'fwhm:{k}' for k, v in fwhms.items() if v != v]
+                 + [f'area:{k}' for k, v in areas.items() if v != v])
+    if bad:
+        warnings.warn(f'summarize(): NaN metrics for {", ".join(bad)}',
+                      RuntimeWarning, stacklevel=2)
 
     nX, nY, nT = field.shape
     cx, cy = nX // 2, nY // 2

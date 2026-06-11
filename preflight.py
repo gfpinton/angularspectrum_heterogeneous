@@ -76,6 +76,8 @@ def _tex_escape(s: str) -> str:
 def _compute_metrics(initial_field: np.ndarray, params) -> dict:
     nX, nY, nT = initial_field.shape
     f0 = float(params.f0); c0 = float(params.c0); rho0 = float(params.rho0)
+    if f0 <= 0 or c0 <= 0:
+        raise ValueError(f'preflight requires f0 > 0 and c0 > 0 (got f0={f0}, c0={c0})')
     beta = float(params.beta)
     omega0 = 2 * np.pi * f0
     lam = c0 / f0
@@ -136,6 +138,7 @@ def _compute_metrics(initial_field: np.ndarray, params) -> dict:
         alpha_eff = float(params.alpha0)
         pw = float(getattr(params, 'attenPow', 1.0))
         alpha_label = f'{alpha_eff:.4g} dB/MHz$^{{{pw:g}}}$/cm'
+    # 8.685889638 = 20/ln(10) dB per neper; *100 converts /cm to /m.
     alpha_Np_m = (alpha_eff * (f0 / 1e6) ** pw) * 100.0 / 8.685889638
     l_atten = 1.0 / alpha_Np_m if alpha_Np_m > 0 else float('inf')
 

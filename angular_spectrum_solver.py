@@ -477,11 +477,18 @@ def precalculate_mas(nX, nY, nT, dX, dY, dZ, dT, c0,
     norm_step = dZ / lambda_char
 
     if adaptive_filtering:
+        # Empirically tuned: the factor 5 sets how fast the cutoff widens
+        # with step size (in characteristic wavelengths); the 0.95 cap
+        # always discards the outermost 5% of k-space (near-Nyquist modes
+        # whose propagator phase is unreliable); the cosine taper starts at
+        # 80% of the cutoff to avoid Gibbs ringing from a hard edge.
         cutoff = filter_threshold * (1 + filter_strength * norm_step * 5)
         k_trans_max = min(kmax * (1 - cutoff), kmax * 0.95)
         k_trans_start = k_trans_max * 0.8
         print(f'  adaptive filtering: cutoff={cutoff:.4f}, norm_step={norm_step:.4f}')
     else:
+        # Fixed filter: same 5% near-Nyquist guard, with a narrower (10%)
+        # cosine taper since the cutoff does not move with step size.
         k_trans_max = kmax * 0.95
         k_trans_start = k_trans_max * 0.9
 
@@ -1631,6 +1638,14 @@ def angular_spectrum_solve(
     # FP32, so allow opting into FP32 for large parameter sweeps.
     _use_x64 = os.environ.get('JAX_ENABLE_X64', '1').lower() not in ('0', 'false')
     jax.config.update("jax_enable_x64", _use_x64)
+
+    if initial_field.ndim != 3:
+        raise ValueError(
+            f'initial_field must be 3-D (nX, nY, nT), got shape {initial_field.shape}')
+    for _name in ('dX', 'dY', 'dT', 'c0', 'rho0', 'f0', 'propDist'):
+        _val = getattr(params, _name)
+        if not np.isfinite(_val) or _val <= 0:
+            raise ValueError(f'params.{_name} must be a positive finite number, got {_val!r}')
 
     nX, nY, nT = initial_field.shape
     c0 = params.c0
