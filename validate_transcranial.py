@@ -28,9 +28,30 @@ from angular_spectrum_solver import (
 OUTDIR = os.path.join(os.path.dirname(__file__), 'validation_results', 'transcranial')
 os.makedirs(OUTDIR, exist_ok=True)
 
-NRRD_PATH = '/celerina/gfp/mfs/fullwave2_sparse_transcranial/skull_microCT_zenodo/halle_skull.nrrd'
-CONNECTOR_PATH = '/celerina/gfp/mfs/fullwave2_sparse_transcranial/Sparse_TransConnector.mat'
-FDTD_OUTPUT_DIR = '/home/gfp/fullwave25-private/outputs/sparse_transcranial_shear'
+# External reference data; override via environment variables when the data
+# lives elsewhere (e.g. for users outside the original development machine).
+NRRD_PATH = os.environ.get(
+    'TRANSCRANIAL_NRRD',
+    '/celerina/gfp/mfs/fullwave2_sparse_transcranial/skull_microCT_zenodo/halle_skull.nrrd')
+CONNECTOR_PATH = os.environ.get(
+    'TRANSCRANIAL_CONNECTOR',
+    '/celerina/gfp/mfs/fullwave2_sparse_transcranial/Sparse_TransConnector.mat')
+FDTD_OUTPUT_DIR = os.environ.get(
+    'TRANSCRANIAL_FDTD_DIR',
+    '/home/gfp/fullwave25-private/outputs/sparse_transcranial_shear')
+
+
+def _check_reference_data():
+    """Fail early with a clear message if the external inputs are missing."""
+    missing = [(name, path) for name, path in
+               [('TRANSCRANIAL_NRRD', NRRD_PATH),
+                ('TRANSCRANIAL_CONNECTOR', CONNECTOR_PATH)]
+               if not os.path.exists(path)]
+    if missing:
+        lines = '\n'.join(f'  {name}: {path}' for name, path in missing)
+        raise FileNotFoundError(
+            'Missing transcranial reference data (set the environment '
+            f'variable(s) to the correct location):\n{lines}')
 
 
 def _save_fig(fig, name):
@@ -320,6 +341,7 @@ def build_initial_condition(positions, element_ids, xaxis, yaxis, t,
 def main():
     print('Transcranial Benchmark: ASM + Phase Screens')
     print('=' * 60)
+    _check_reference_data()
 
     # --- Parameters matching the FDTD simulation ---
     f0 = 1e6

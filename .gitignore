@@ -49,6 +49,14 @@ arxiv_submission.tar.gz
 validation_results/bowl/txrx_0/
 validation_results/transcranial/txrx_0/
 
+# One-off debug/exploration scripts (see scratch/README.md)
+scratch/*
+!scratch/README.md
+
+# Runtime diagnostic / pre-flight outputs
+diagnostic_frames/
+preflight/
+
 # Keep validation figure PNGs (override *.npz exclusion)
 !validation_results/**/*.png
 
