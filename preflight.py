@@ -52,6 +52,44 @@ _UNICODE_TEX = {
 }
 
 
+def compile_latex_pdf(tex_basename: str, output_dir: str,
+                      verbose: bool = True) -> Optional[str]:
+    """Compile ``<output_dir>/<tex_basename>`` to PDF with ``pdflatex``.
+
+    Shared by the pre-solve pre-flight report and the post-solve lab-frame
+    validation page so both per-run PDFs use the same toolchain and cleanup.
+    Runs non-interactively, tidies the ``.aux/.log/.out`` auxiliaries, and
+    returns the PDF path on success — or ``None`` if ``pdflatex`` is missing
+    or the compile fails (callers fall back to the embedded PNG).
+    """
+    pdflatex = shutil.which('pdflatex')
+    if pdflatex is None:
+        if verbose:
+            print('[latex] pdflatex not found; skipping PDF compile')
+        return None
+    stem = os.path.splitext(tex_basename)[0]
+    try:
+        subprocess.run(
+            [pdflatex, '-interaction=nonstopmode', '-halt-on-error',
+             '-output-directory', output_dir, tex_basename],
+            cwd=output_dir, capture_output=True, timeout=60, check=True)
+    except subprocess.CalledProcessError as e:
+        if verbose:
+            print(f'[latex] pdflatex failed for {tex_basename}:')
+            print(e.stdout.decode(errors='ignore')[-2000:] if e.stdout else '')
+        return None
+    except subprocess.TimeoutExpired:
+        if verbose:
+            print(f'[latex] pdflatex timed out for {tex_basename}')
+        return None
+    # Tidy up auxiliary files
+    for ext in ('aux', 'log', 'out'):
+        aux = os.path.join(output_dir, f'{stem}.{ext}')
+        if os.path.exists(aux):
+            os.remove(aux)
+    return os.path.join(output_dir, f'{stem}.pdf')
+
+
 def _tex_escape(s: str) -> str:
     """Escape LaTeX special characters and translate common unicode."""
     s = str(s)
@@ -621,26 +659,7 @@ def preflight_report(initial_field: np.ndarray,
 
     pdf_path = None
     if compile_pdf:
-        pdflatex = shutil.which('pdflatex')
-        if pdflatex is None:
-            if verbose:
-                print('[preflight] pdflatex not found; skipping PDF compile')
-        else:
-            try:
-                subprocess.run(
-                    [pdflatex, '-interaction=nonstopmode', '-halt-on-error',
-                     '-output-directory', output_dir, 'preflight.tex'],
-                    cwd=output_dir, capture_output=True, timeout=60, check=True)
-                pdf_path = os.path.join(output_dir, 'preflight.pdf')
-                # Tidy up auxiliary files
-                for ext in ('aux', 'log', 'out'):
-                    aux = os.path.join(output_dir, f'preflight.{ext}')
-                    if os.path.exists(aux):
-                        os.remove(aux)
-            except subprocess.CalledProcessError as e:
-                if verbose:
-                    print('[preflight] pdflatex failed:')
-                    print(e.stdout.decode(errors='ignore')[-2000:] if e.stdout else '')
+        pdf_path = compile_latex_pdf('preflight.tex', output_dir, verbose=verbose)
 
     if verbose:
         print(f'[preflight] panels → {panels_path}')
