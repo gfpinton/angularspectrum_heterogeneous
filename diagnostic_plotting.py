@@ -228,6 +228,120 @@ def _save(fig, path: str) -> None:
     plt.close(fig)
 
 
+# ---------------------------------------------------------------------------
+# Lab-frame (conventional space-time) validation page
+# ---------------------------------------------------------------------------
+def _render_labframe_tex(png_basename: str, check: dict) -> str:
+    """One-page LaTeX embedding the lab-frame wavefront figure + arrival check.
+
+    Compiled to ``labframe_validation.pdf`` — the post-solve sibling of the
+    pre-solve ``preflight.pdf`` (same pdflatex toolchain).
+    """
+    def _f(x, nd=3):
+        return 'n/a' if not np.isfinite(x) else f'{x:.{nd}f}'
+
+    rel = check.get('rel_err_lab', float('nan'))
+    ok = np.isfinite(rel) and rel < 0.05
+    status = (r'\textcolor{teal!70!black}{\textbf{PASS}}' if ok
+              else r'\textcolor{red}{\textbf{CHECK}}')
+
+    return rf"""\documentclass{{article}}
+\usepackage[T1]{{fontenc}}
+\usepackage[utf8]{{inputenc}}
+\usepackage[margin=1.2cm,a4paper,landscape]{{geometry}}
+\usepackage{{graphicx}}
+\usepackage{{booktabs}}
+\usepackage{{xcolor}}
+\usepackage{{amsmath,amssymb}}
+\setlength{{\parindent}}{{0pt}}
+\pagestyle{{empty}}
+\begin{{document}}
+
+{{\large\textbf{{Angular Spectrum Solver — Lab-Frame Wavefront Validation}}}}\\[2pt]
+The march stores the field in a \emph{{retarded}} time frame $\tau=t-z/c_0$
+(the bulk $c_0$ transit delay is removed each march plane, so the pulse looks
+nearly frozen in $z$). The panels below undo that shear —
+$p_{{\text{{lab}}}}(x,z,t)=p_{{\text{{ret}}}}(x,z,\ \tau=t-z/c_0)$ — so the
+wavefront physically propagates at $c_0$ from the source through the focus and
+diverges past it. Signed pressure, diverging scale (red = compression, blue =
+rarefaction).
+
+\vspace{{2pt}}
+\begin{{center}}
+\includegraphics[width=0.86\linewidth]{{{png_basename}}}
+\end{{center}}
+
+\vspace{{-2pt}}
+\noindent\textbf{{Linear-arrival sanity check}} \quad {status}
+\hfill{{\small(retarded peak should be flat; lab arrival slope should equal $1/c_0$)}}
+
+\vspace{{2pt}}
+{{\small
+\begin{{tabular}}{{lrr}}
+\toprule
+ & slope ($\mu$s/mm) & $R^2$ \\
+\midrule
+Retarded peak $\tau_{{\text{{peak}}}}(z)$ (expect $\approx 0$) & {_f(check.get('slope_ret_us_per_mm', float('nan')))} & {_f(check.get('r2_ret', float('nan')), 4)} \\
+Lab arrival $\tau_{{\text{{peak}}}}(z)+z/c_0$ (expect $1/c_0$) & {_f(check.get('slope_lab_us_per_mm', float('nan')))} & {_f(check.get('r2_lab', float('nan')), 4)} \\
+Physical $1/c_0$ ($c_0={_f(check.get('c0', float('nan')), 1)}$ m/s) & {_f(check.get('inv_c0_us_per_mm', float('nan')))} & --- \\
+\midrule
+Lab-slope relative error & \multicolumn{{2}}{{r}}{{{_f(rel*100 if np.isfinite(rel) else rel, 2)}\% over {check.get('n_z_used', 0)}/{check.get('n_z_total', 0)} depths}} \\
+\bottomrule
+\end{{tabular}}
+}}
+
+\end{{document}}
+"""
+
+
+def _labframe_validation_page(field_history: np.ndarray,
+                              tau_axis: np.ndarray,
+                              zaxis: np.ndarray,
+                              c0: float,
+                              xaxis: np.ndarray,
+                              summary_dir: str,
+                              ntiles: int = 5,
+                              compile_pdf: bool = True,
+                              verbose: bool = True) -> Optional[dict]:
+    """Render the lab-frame wavefront figure and (optionally) compile a PDF.
+
+    ``field_history`` is the captured retarded-frame xz cube
+    ``(nX, nT_ret, nZ)`` (signed mid-y pressure per march step). Returns a
+    dict with the PNG/PDF paths and the arrival-check metrics, or ``None``
+    when there is too little history to de-shear.
+    """
+    from labframe import plot_labframe_validation  # local: keep it optional
+
+    hist = np.asarray(field_history)
+    if hist.ndim != 3 or hist.shape[1] < 2 or hist.shape[2] < 2:
+        if verbose:
+            print('[labframe] insufficient xz history; skipping lab-frame page')
+        return None
+
+    png_path = os.path.join(summary_dir, 'labframe_wavefront.png')
+    check = plot_labframe_validation(
+        hist, tau_axis, zaxis, c0, png_path, ntiles=ntiles, xaxis=xaxis)
+
+    pdf_path = None
+    tex_path = os.path.join(summary_dir, 'labframe_validation.tex')
+    with open(tex_path, 'w') as f:
+        f.write(_render_labframe_tex(os.path.basename(png_path), check))
+    if compile_pdf:
+        from preflight import compile_latex_pdf   # local: avoids import cycle
+        pdf_path = compile_latex_pdf(
+            'labframe_validation.tex', summary_dir, verbose=verbose)
+
+    if verbose:
+        print(f'[labframe] wavefront figure -> {png_path}')
+        if pdf_path:
+            print(f'[labframe] validation PDF -> {pdf_path}')
+        print(f"[labframe] lab arrival slope {check['slope_lab_us_per_mm']:.3f} "
+              f"vs 1/c0 {check['inv_c0_us_per_mm']:.3f} µs/mm "
+              f"(retarded peak slope {check['slope_ret_us_per_mm']:+.3f})")
+    return {'png_path': png_path, 'tex_path': tex_path,
+            'pdf_path': pdf_path, 'check': check}
+
+
 def plot_summary_report(
         field: np.ndarray,             # (nX, nY, nT) final
         initial_field: np.ndarray,     # (nX, nY, nT)
@@ -246,8 +360,19 @@ def plot_summary_report(
         dZ_history: Optional[np.ndarray] = None,
         restart_events: Optional[list] = None,
         stab_threshold: float = 0.2,
-        elapsed_s: Optional[float] = None) -> None:
-    """Emit the static summary panels into ``<diagnostic_dir>/summary/``."""
+        elapsed_s: Optional[float] = None,
+        xz_history: Optional[np.ndarray] = None,
+        xz_tau_axis: Optional[np.ndarray] = None,
+        labframe_compile_pdf: bool = True) -> None:
+    """Emit the static summary panels into ``<diagnostic_dir>/summary/``.
+
+    When ``xz_history`` (the captured retarded-frame xz cube, shape
+    ``(nX, nT_ret, nZ)`` of signed mid-y pressure per march step) and its
+    ``xz_tau_axis`` are supplied, a conventional-space-time (lab-frame)
+    wavefront validation page is added (``labframe_wavefront.png`` plus, if
+    ``labframe_compile_pdf`` and ``pdflatex`` are available,
+    ``labframe_validation.pdf``).
+    """
     summary_dir = os.path.join(diagnostic_dir, 'summary')
     ensure_dir(summary_dir)
 
@@ -488,9 +613,31 @@ def plot_summary_report(
     _save(fig, os.path.join(summary_dir, 'harmonics.png'))
 
     # ---------------------------------------------------------------------
+    # Lab-frame (conventional space-time) wavefront validation page
+    # ---------------------------------------------------------------------
+    labframe_metrics = None
+    if xz_history is not None and np.asarray(xz_history).size and xz_tau_axis is not None:
+        lf = _labframe_validation_page(
+            np.asarray(xz_history), np.asarray(xz_tau_axis), zaxis, c0,
+            xaxis, summary_dir,
+            compile_pdf=labframe_compile_pdf, verbose=True)
+        if lf is not None:
+            c = lf['check']
+            labframe_metrics = {
+                'lab_arrival_slope_us_per_mm': c['slope_lab_us_per_mm'],
+                'inv_c0_us_per_mm': c['inv_c0_us_per_mm'],
+                'lab_slope_rel_err': c['rel_err_lab'],
+                'retarded_peak_slope_us_per_mm': c['slope_ret_us_per_mm'],
+                'lab_arrival_r2': c['r2_lab'],
+                'n_z_used': c['n_z_used'],
+                'pdf_path': lf['pdf_path'],
+            }
+
+    # ---------------------------------------------------------------------
     # metrics.json
     # ---------------------------------------------------------------------
     metrics = {
+        'labframe': labframe_metrics,
         'max_Isppa_W_per_cm2': float(Isppa.max()),
         'max_MI': float(MI_vol.max()),
         'max_pnp_Pa': float(pnp.max()),

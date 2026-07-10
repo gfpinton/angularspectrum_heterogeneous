@@ -88,6 +88,17 @@ class SolverParams:
     diagnosticDir: str = './diagnostic_frames'
     diagnosticSummary: bool = True
     diagnosticInitialConditions: bool = True
+    # Lab-frame (conventional space-time) wavefront validation. When
+    # ``diagnostic`` and ``diagnosticLabframe`` are both on, the solver
+    # captures a lightweight xz time-history of the SIGNED mid-y field per
+    # march step (time axis subsampled to <= ``diagnosticLabframeMaxFrames``
+    # samples) and the end-of-run summary de-shears it from the retarded
+    # frame (tau = t - z/c0) into laboratory space-time, adding a
+    # ``labframe_wavefront.png`` / ``labframe_validation.pdf`` page under
+    # ``<diagnosticDir>/summary/``. Costs one small (nX, nT_sub) device->host
+    # copy per step; fully skipped when ``diagnostic`` is False.
+    diagnosticLabframe: bool = True
+    diagnosticLabframeMaxFrames: int = 300
     pdur: Optional[float] = None
     # Pre-flight sanity report. Defaults to True: a single-page LaTeX/PDF
     # report is generated under ``preflightDir`` before the solve starts.
@@ -1834,6 +1845,15 @@ def angular_spectrum_solve(
         _diag_dZ_history = []
         _diag_stab_margin = []
         _diag_restart_steps = []  # list of (cc_at_violation, margin_value)
+        # Lab-frame xz history: signed field on the mid-y plane per step,
+        # with the retarded-time axis subsampled to stay small.
+        _diag_lf_on = params.diagnosticLabframe
+        if _diag_lf_on:
+            _diag_lf_stride = max(1, int(np.ceil(
+                nT / max(int(params.diagnosticLabframeMaxFrames), 1))))
+            _diag_lf_tidx = np.arange(0, nT, _diag_lf_stride)
+            _diag_lf_tau = (np.arange(nT, dtype=np.float64) * params.dT)[_diag_lf_tidx]
+            _diag_lf_cols = []  # per-step (nX, nT_sub) signed mid-y slabs
 
     field = jnp.array(initial_field, dtype=jnp.float32)
     zvec = []
@@ -1893,6 +1913,8 @@ def angular_spectrum_solve(
                 _diag_frame_count = 0
                 _diag_dZ_history = []
                 _diag_stab_margin = []
+                if _diag_lf_on:
+                    _diag_lf_cols = []
             continue
 
         if verbose:
@@ -2079,6 +2101,10 @@ def angular_spectrum_solve(
         if params.diagnostic:
             _diag_dZ_history.append(float(dZ_step))
             _diag_stab_margin.append(float(_stab_margin))
+            if _diag_lf_on:
+                # Signed mid-y xz slab (nX, nT_sub) for retarded->lab de-shear.
+                _diag_lf_cols.append(
+                    np.asarray(field[:, nY // 2, _diag_lf_tidx], dtype=np.float32))
 
         if params.diagnostic and (cc % params.diagnosticInterval == 0):
             _diag_frame(
@@ -2106,6 +2132,13 @@ def angular_spectrum_solve(
     zaxis = np.cumsum(zvec[:cc])
 
     if params.diagnostic and params.diagnosticSummary and cc > 0:
+        # Stack the per-step xz slabs into a (nX, nT_sub, nZ) retarded-frame
+        # cube for the lab-frame validation page (None when disabled/empty).
+        _diag_xz_hist = None
+        _diag_xz_tau = None
+        if _diag_lf_on and len(_diag_lf_cols) >= 2:
+            _diag_xz_hist = np.stack(_diag_lf_cols, axis=-1)
+            _diag_xz_tau = _diag_lf_tau
         _diag_summary(
             np.asarray(field), np.asarray(initial_field, dtype=np.float32),
             pnp, ppp, pI, pIloss, zaxis, pax,
@@ -2117,7 +2150,10 @@ def angular_spectrum_solve(
             dZ_history=np.array(_diag_dZ_history, dtype=np.float64),
             restart_events=list(_diag_restart_steps),
             stab_threshold=params.stabilityThreshold,
-            elapsed_s=elapsed)
+            elapsed_s=elapsed,
+            xz_history=_diag_xz_hist,
+            xz_tau_axis=_diag_xz_tau,
+            labframe_compile_pdf=params.preflightCompilePdf)
 
     if _tof_enabled:
         tof = tof[:, :, :cc]
