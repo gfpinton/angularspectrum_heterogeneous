@@ -72,7 +72,26 @@ class SolverParams:
     # FFT per march step when enabled.
     useNonlinearityObliquity: bool = False
     # --- phase screens for heterogeneous propagation ---
-    phaseScreens: object = None  # list of (z_position, screen_array) tuples
+    # List of per-plane screens, applied when the march crosses their z.
+    # Accepted tuple forms:
+    #   (z, phase)          — phase only, radians at f0
+    #   (z, phase, amp)     — plus amplitude transmission at f0 (0..1],
+    #                         frequency-scaled as amp^(f/f0) (α ∝ f law)
+    #   (z, phase, amp, y)  — plus attenuation power-law exponent: the
+    #                         transmission becomes amp^((f/f0)^y), i.e. a
+    #                         local α ∝ f^y law. y is a scalar or an
+    #                         (nX, nY) map (e.g. cortical bone vs marrow),
+    #                         valid on Szabo's power-law range 0 < y < 3.
+    phaseScreens: object = None
+    # When True, every amplitude screen additionally applies the
+    # Kramers-Kronig dispersive phase implied by its power law (Szabo),
+    # using the same formulas as precalculate_ad_pow2: with A0 = -ln(amp)
+    # the Np loss at f0 and fs = f/f0,
+    #   φ(f) = tan(πy/2) · A0 · (fs^y - fs)        for y ≠ 1
+    #   φ(f) = -(2/π) · A0 · fs · ln(fs)            for y = 1
+    # When False (default, legacy) screens are amplitude-only and add no
+    # dispersive phase beyond the sound-speed term already in `phase`.
+    screenKKDispersion: bool = False
     # --- distributed source injection (bowl transducer) ---
     sourcePlanes: object = None  # list of (z_position, field_slice) from make_bowl_source_planes
     # --- diagnostic / validation imagery ---
@@ -421,13 +440,17 @@ def generate_phase_screen(nX, nY, dX, dY, c0, f0,
     return phase_shift.astype(np.float32), c_map.astype(np.float32)
 
 
-@jit
-def _apply_phase_screen(field, phase_screen, f0_bin, amplitude_screen=None):
+@partial(jit, static_argnames=('kk_dispersion',))
+def _apply_phase_screen(field, phase_screen, f0_bin, amplitude_screen=None,
+                        atten_pow=None, kk_dispersion=False):
     """Apply a phase+amplitude screen in the temporal frequency domain.
 
     The phase screen shifts each frequency component by phase * f/f0.
     The amplitude screen attenuates each frequency component by
-    amp^(f/f0) — higher frequencies see more attenuation through bone.
+    amp^((f/f0)^y) — a local α ∝ f^y power law whose transmission at f0
+    is ``amp``. With the default y = 1 (atten_pow None) this reduces to
+    the legacy amp^(f/f0): higher frequencies see more attenuation
+    through bone.
 
     Parameters
     ----------
@@ -435,6 +458,14 @@ def _apply_phase_screen(field, phase_screen, f0_bin, amplitude_screen=None):
     phase_screen : (nX, nY) phase shift at f0 in radians
     f0_bin : float — the rfft bin index corresponding to f0
     amplitude_screen : (nX, nY) transmission factor at f0 (0 to 1), optional
+    atten_pow : power-law exponent y, scalar or (nX, nY) map, optional
+        (None → y = 1). Valid on Szabo's power-law range 0 < y < 3.
+    kk_dispersion : bool, static — when True, also apply the
+        Kramers-Kronig phase implied by the screen's power law, using the
+        same Szabo formulas as precalculate_ad_pow2 (the y = 1 log form
+        is selected per-pixel where |y - 1| < 1e-6, mirroring the
+        volumetric filter's odd-power branch; y = 2 gives tan(π) ≈ 0, no
+        dispersion, as it should). No-op without an amplitude screen.
     """
     nT = field.shape[2]
     F = jnp.fft.rfft(field, axis=2)          # (nX, nY, n_freq)
@@ -453,11 +484,37 @@ def _apply_phase_screen(field, phase_screen, f0_bin, amplitude_screen=None):
     fs = f_scale[jnp.newaxis, jnp.newaxis, :]  # (1, 1, n_freq)
     F = F * jnp.exp(-1j * ps * fs)
 
-    # Amplitude modulation: amp^(f/f0) — frequency-dependent attenuation
+    # Amplitude modulation: amp^((f/f0)^y) — frequency-dependent attenuation
     if amplitude_screen is not None:
-        amp = amplitude_screen[:, :, jnp.newaxis]  # (nX, nY, 1)
-        # amp^(f/f0): at f0 get the nominal attenuation, higher f more loss
-        F = F * jnp.power(jnp.clip(amp, 1e-6, 1.0), fs)
+        amp = jnp.clip(amplitude_screen[:, :, jnp.newaxis], 1e-6, 1.0)
+        if atten_pow is None:
+            y = None
+            fs_pow = fs                       # legacy y = 1
+        else:
+            y = jnp.asarray(atten_pow, dtype=jnp.float32)
+            y = y[:, :, jnp.newaxis] if y.ndim == 2 else y
+            fs_pow = fs ** y                  # 0^y = 0 keeps DC untouched
+        # amp^((f/f0)^y): at f0 the nominal transmission, higher f more loss
+        F = F * jnp.power(amp, fs_pow)
+
+        if kk_dispersion:
+            # Szabo dispersion consistent with precalculate_ad_pow2,
+            # rewritten in screen variables: A0 = -ln(amp) is the Np loss
+            # at f0, so conv·dz = A0/f0^y and the dispersive phase
+            # α*(f)·dz = ω·dz·(1/c(ω) - 1/c0) collapses to pure functions
+            # of fs = f/f0. Same exp(-j·φ) sign convention as the phase
+            # screen and the volumetric filter.
+            y_kk = jnp.float32(1.0) if y is None else y
+            A0 = -jnp.log(amp)
+            fs_pos = fs > 0
+            fs_safe = jnp.where(fs_pos, fs, 1.0)
+            y_is_one = jnp.abs(y_kk - 1.0) < 1e-6
+            y_tan = jnp.where(y_is_one, 2.0, y_kk)  # dodge tan(π/2) inf
+            phi_tan = jnp.tan(jnp.pi * y_tan / 2.0) * (fs ** y_tan - fs)
+            phi_log = -(2.0 / jnp.pi) * fs * jnp.log(fs_safe)
+            phi = A0 * jnp.where(y_is_one, phi_log, phi_tan)
+            phi = jnp.where(fs_pos, phi, 0.0)
+            F = F * jnp.exp(-1j * phi)
 
     return jnp.fft.irfft(F, n=nT, axis=2)
 
@@ -2031,15 +2088,19 @@ def angular_spectrum_solve(
         if params.phaseScreens is not None:
             z_current = sum(zvec)
             for screen in params.phaseScreens:
-                # Screens can be 2-tuple (z, phase) or 3-tuple (z, phase, amp)
+                # Screens: (z, phase), (z, phase, amp), or (z, phase, amp, y)
                 z_ps = screen[0]
                 ps_array = screen[1]
                 amp_array = screen[2] if len(screen) > 2 else None
+                pow_array = screen[3] if len(screen) > 3 else None
                 # Apply screen when we cross its z-position
                 if z_current < z_ps <= z_current + dZ_step:
                     ps_jax = jnp.array(ps_array, dtype=jnp.float32)
                     amp_jax = jnp.array(amp_array, dtype=jnp.float32) if amp_array is not None else None
-                    field = _apply_phase_screen(field, ps_jax, f0_bin, amp_jax)
+                    pow_jax = jnp.array(pow_array, dtype=jnp.float32) if pow_array is not None else None
+                    field = _apply_phase_screen(
+                        field, ps_jax, f0_bin, amp_jax, pow_jax,
+                        kk_dispersion=bool(params.screenKKDispersion))
                     if verbose:
                         print(f'  applied phase screen at z = {z_ps:.4f} m')
 

@@ -186,7 +186,8 @@ def load_skull_reference_slice(nrrd_path, s_mm):
 
 def skull_to_phase_screens(c_map, dz_screen, dz_prop, c0, f0,
                            rho_map=None, rho0=1000.0,
-                           alpha_bone=8.0, alpha_tissue=0.5):
+                           alpha_bone=8.0, alpha_tissue=0.5,
+                           atten_pow_bone=None, atten_pow_tissue=None):
     """Convert a 3D sound-speed/density map into phase+amplitude screens.
 
     Parameters
@@ -198,18 +199,30 @@ def skull_to_phase_screens(c_map, dz_screen, dz_prop, c0, f0,
     f0 : float — center frequency (Hz)
     rho_map : (nx, ny, nz) density map (kg/m³), optional
     rho0 : float — background density (kg/m³)
-    alpha_bone : float — bone attenuation (dB/cm/MHz), default 8.0
-    alpha_tissue : float — tissue attenuation (dB/cm/MHz), default 0.5
+    alpha_bone : float — bone attenuation (dB/cm/MHz^y), default 8.0
+    alpha_tissue : float — tissue attenuation (dB/cm/MHz^y), default 0.5
+    atten_pow_bone : float — bone attenuation power-law exponent y, optional
+    atten_pow_tissue : float — tissue attenuation exponent y, optional
+        When either exponent is given (the other defaults to 1.0), each
+        screen carries a per-pixel exponent map interpolated by bone
+        fraction, and the solver applies a local α ∝ f^y law per pixel;
+        alpha_* are then read at f0 as dB/cm/MHz^y. When both are None
+        (default) screens keep the legacy linear-in-f scaling.
 
     Returns
     -------
-    screens : list of (z_position, phase_array, amplitude_array) tuples
+    screens : list of (z_position, phase_array, amplitude_array[, pow_array])
         phase_array : (nx, ny) phase shift in radians at f0
         amplitude_array : (nx, ny) transmission factor (0 to 1)
+        pow_array : (nx, ny) power-law exponent map (only when an
+            atten_pow_* argument was given)
     """
     nx, ny, nz = c_map.shape
     omega = 2 * np.pi * f0
     f_MHz = f0 / 1e6
+    use_pow = atten_pow_bone is not None or atten_pow_tissue is not None
+    pow_bone = 1.0 if atten_pow_bone is None else atten_pow_bone
+    pow_tissue = 1.0 if atten_pow_tissue is None else atten_pow_tissue
     screens = []
 
     for iz in range(nz):
@@ -223,8 +236,13 @@ def skull_to_phase_screens(c_map, dz_screen, dz_prop, c0, f0,
         # Bone fraction determines local attenuation
         bone_frac = np.clip((c_slice - 1540.0) / (2900.0 - 1540.0), 0, 1)
         alpha_local = alpha_tissue + bone_frac * (alpha_bone - alpha_tissue)
-        # Convert dB/cm/MHz to Np/m: 1 dB = 0.1151 Np, 1 cm = 0.01 m
-        alpha_Np_m = alpha_local * f_MHz * 0.1151 / 0.01  # Np/m
+        # Convert dB/cm/MHz^y to Np/m: 1 dB = 0.1151 Np, 1 cm = 0.01 m
+        if use_pow:
+            pow_map = pow_tissue + bone_frac * (pow_bone - pow_tissue)
+            alpha_Np_m = alpha_local * f_MHz ** pow_map * 0.1151 / 0.01
+        else:
+            pow_map = None
+            alpha_Np_m = alpha_local * f_MHz * 0.1151 / 0.01  # Np/m
         atten = np.exp(-alpha_Np_m * dz_screen)
 
         # --- Amplitude: impedance mismatch transmission ---
@@ -242,16 +260,22 @@ def skull_to_phase_screens(c_map, dz_screen, dz_prop, c0, f0,
 
         # Only add non-trivial screens
         if np.max(np.abs(phase)) > 1e-6 or np.min(amplitude) < 0.999:
-            screens.append((z_pos,
-                            phase.astype(np.float32),
-                            amplitude.astype(np.float32)))
+            if use_pow:
+                screens.append((z_pos,
+                                phase.astype(np.float32),
+                                amplitude.astype(np.float32),
+                                pow_map.astype(np.float32)))
+            else:
+                screens.append((z_pos,
+                                phase.astype(np.float32),
+                                amplitude.astype(np.float32)))
 
     print(f'  Generated {len(screens)} screens from {nz} z-slices')
     # Report total attenuation through skull at center
     if screens:
         total_atten = np.ones((nx, ny), dtype=np.float32)
-        for _, _, amp in screens:
-            total_atten *= amp
+        for s in screens:
+            total_atten *= s[2]
         center_loss = -20 * np.log10(total_atten[nx//2, ny//2] + 1e-30)
         min_trans = total_atten.min()
         print(f'  Total attenuation: center={center_loss:.1f} dB, '
@@ -264,9 +288,9 @@ def screens_to_xz_maps(screens, mid_elev):
     if not screens:
         return None, None
 
-    phase_xz = np.stack([phase[:, mid_elev] for _, phase, _ in screens], axis=0)
+    phase_xz = np.stack([s[1][:, mid_elev] for s in screens], axis=0)
     atten_xz_dB = np.stack(
-        [-20.0 * np.log10(np.maximum(amp[:, mid_elev], 1e-30)) for _, _, amp in screens],
+        [-20.0 * np.log10(np.maximum(s[2][:, mid_elev], 1e-30)) for s in screens],
         axis=0)
     return phase_xz, atten_xz_dB
 
