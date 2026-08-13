@@ -14,6 +14,7 @@ A three-dimensional nonlinear acoustic propagation solver based on the modified 
 - **Diagnostic imagery**: Runtime 3×3 dashboards every N march steps and an end-of-run summary report (Isppa / MI / PNP / PPP cross-sections, harmonics-vs-z, boundary-leakage and stability checks, `metrics.json`)
 - **Pre-flight sanity report**: Single-page LaTeX/PDF report with grid / pulse / material / numerics tables and an IC panels figure, plus per-screen phase + amplitude maps when phase screens are configured
 - **Sub-sample TOF extraction**: Optional matched-filter-parabolic or envelope-based time-of-flight tracking per (x, y) at every z step
+- **2-D solves**: `angular_spectrum_solve_2d` propagates (x, t) fields exactly (singleton-y reduction of the 3-D solver) for fast Cartesian 2-D studies
 
 ## Requirements
 
@@ -132,6 +133,31 @@ out = angular_spectrum_solve(field, params,
 
 Or pass `tof_env_ratio=1.0` for an envelope-based fallback (no reference
 needed).
+
+### 2-D solves
+
+`angular_spectrum_solve_2d` propagates a 2-D `(nX, nT)` field. It runs
+the 3-D solver with a singleton y axis — exact, not approximate: the only
+transverse mode is k_y = 0, which gives the 2-D dispersion relation
+k_z = √(k² − k_x²), and the nonlinear/attenuation/phase-screen operators
+are dimension-agnostic. All `SolverParams` options apply (set `dY = dX`;
+a singleton axis carries no bandwidth so its value is inert), phase
+screens may use 1-D `(nX,)` arrays, and outputs come back with the y axis
+squeezed out:
+
+```python
+from angular_spectrum_solver import angular_spectrum_solve_2d
+
+field2d = np.zeros((nX, nT))          # line source: (x, t)
+out, pnp, ppp, pI, pIloss, zaxis, pax = angular_spectrum_solve_2d(
+    field2d, params, verbose=False)   # out: (nX, nT), pnp: (nX, nZ), ...
+```
+
+Note this is Cartesian 2-D — sources are line sources with cylindrical
+spreading, not axisymmetric 3-D. Focal gains and shock formation
+distances therefore differ from the equivalent 3-D geometry. The
+pre-flight/diagnostic imagery is 3-D-oriented; prefer
+`diagnostic=False, preflight=False` for 2-D runs.
 
 ## Validation
 
