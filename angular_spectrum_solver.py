@@ -20,7 +20,7 @@ import jax
 import jax.numpy as jnp
 from jax import jit
 from functools import partial
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _dc_replace
 from typing import Optional, Callable
 import time as _time
 
@@ -172,6 +172,8 @@ class SolverParams:
 # ---------------------------------------------------------------------------
 def ablvec(N: int, n: int) -> np.ndarray:
     """Original quadratic boundary profile: C0 continuous."""
+    if N == 1:
+        return np.ones(1)  # singleton axis (2-D mode): no absorbing layer
     vec = np.zeros(N)
     for nn in range(n):
         x = (n - nn - 1) / n
@@ -191,6 +193,8 @@ def ablvec_wendland(N: int, n: int) -> np.ndarray:
     quadratic profile whose second derivative is discontinuous at the
     taper onset.
     """
+    if N == 1:
+        return np.ones(1)  # singleton axis (2-D mode): no absorbing layer
     vec = np.ones(N)
     for nn in range(n):
         s = (n - nn - 1) / n          # 1 at edge, 0 at interior
@@ -365,6 +369,8 @@ def _super_absorbing_step(field, bdy_weight_x, bdy_weight_y, dX, dY, dT,
 
 def _make_boundary_weights(N, n_bdy):
     """Smooth weight that is 1 at the edge and 0 in the interior."""
+    if N == 1:
+        return np.zeros(1, dtype=np.float32)  # singleton axis: no edges
     w = np.zeros(N, dtype=np.float32)
     for nn in range(n_bdy):
         s = (n_bdy - nn - 1) / n_bdy  # 1 at edge → 0 at interior boundary
@@ -522,6 +528,19 @@ def _apply_phase_screen(field, phase_screen, f0_bin, amplitude_screen=None,
 # ---------------------------------------------------------------------------
 # Precalculate modified angular spectrum (with optional adaptive filtering)
 # ---------------------------------------------------------------------------
+def _centered_k_axis(n, d):
+    """Centered spatial-frequency axis in the solver's grid convention.
+
+    A singleton axis carries only the k=0 mode (this is how 2-D operation
+    collapses the y dimension), so it returns [0] instead of dividing by
+    n - 1.
+    """
+    if n == 1:
+        return np.zeros(1)
+    k = np.linspace(0, n - 1, n) / (n - 1) / d * 2 * np.pi
+    return k - np.mean(k)
+
+
 def precalculate_mas(nX, nY, nT, dX, dY, dZ, dT, c0,
                      split_step=False,
                      adaptive_filtering=False,
@@ -531,16 +550,17 @@ def precalculate_mas(nX, nY, nT, dX, dY, dZ, dT, c0,
 
     kt = np.linspace(0, nT - 1, nT) / (nT - 1) / dT * 2 * np.pi / c0
     kt -= np.mean(kt)
-    kx = np.linspace(0, nX - 1, nX) / (nX - 1) / dX * 2 * np.pi
-    kx -= np.mean(kx)
-    ky = np.linspace(0, nY - 1, nY) / (nY - 1) / dY * 2 * np.pi
-    ky -= np.mean(ky)
+    kx = _centered_k_axis(nX, dX)
+    ky = _centered_k_axis(nY, dY)
 
     # Transverse wavenumber grid (precomputed once)
     kk = kx[:, None] ** 2 + ky[None, :] ** 2  # (nX, nY)
 
-    # Adaptive filtering setup — kmax is the actual max spatial freq in the centered grid
-    kmax = min(np.pi / dX, np.pi / dY)
+    # Adaptive filtering setup — kmax is the actual max spatial freq in the
+    # centered grid. Singleton axes (2-D operation) carry no bandwidth and
+    # must not constrain the cutoff.
+    _kmax_axes = [np.pi / d for n_ax, d in ((nX, dX), (nY, dY)) if n_ax > 1]
+    kmax = min(_kmax_axes) if _kmax_axes else np.pi / min(dX, dY)
     lambda_char = c0 / np.mean(np.abs(kt[kt != 0])) if np.any(kt != 0) else c0 / (1.0 / dT)
     norm_step = dZ / lambda_char
 
@@ -621,10 +641,8 @@ def _build_oblique_atten_filter(alpha, alphaStar, nX, nY, nT, dX, dY, dZ, c0,
     DC/zero-frequency bin the filter is unity.
     """
     # Transverse wavenumber grid in the same centered convention as HH
-    kx = np.linspace(0, nX - 1, nX) / (nX - 1) / dX * 2 * np.pi
-    kx -= np.mean(kx)
-    ky = np.linspace(0, nY - 1, nY) / (nY - 1) / dY * 2 * np.pi
-    ky -= np.mean(ky)
+    kx = _centered_k_axis(nX, dX)
+    ky = _centered_k_axis(nY, dY)
     kk = kx[:, None] ** 2 + ky[None, :] ** 2  # (nX, nY)
 
     f = np.arange(nT) / (nT * dT)
@@ -737,10 +755,8 @@ def precalculate_obliquity_map(nX, nY, nT, dX, dY, dT, c0):
     Returns a float32 array of shape (nX, nY, nT//2+1) in fftshifted-centered
     (k_x, k_y) order, zero for evanescent modes and for the DC bin.
     """
-    kx = np.linspace(0, nX - 1, nX) / (nX - 1) / dX * 2 * np.pi
-    kx -= np.mean(kx)
-    ky = np.linspace(0, nY - 1, nY) / (nY - 1) / dY * 2 * np.pi
-    ky -= np.mean(ky)
+    kx = _centered_k_axis(nX, dX)
+    ky = _centered_k_axis(nY, dY)
     kk = kx[:, None] ** 2 + ky[None, :] ** 2  # (nX, nY)
 
     n_freq = nT // 2 + 1
@@ -2220,3 +2236,78 @@ def angular_spectrum_solve(
         tof = tof[:, :, :cc]
         return np.array(field), pnp, ppp, pI, pIloss, zaxis, pax, tof
     return np.array(field), pnp, ppp, pI, pIloss, zaxis, pax
+
+
+# ---------------------------------------------------------------------------
+# 2-D solve (x, t)
+# ---------------------------------------------------------------------------
+def _screen_array_2d(arr):
+    """Promote a per-screen 1-D (nX,) array to the (nX, 1) the solver expects.
+
+    Scalars and already-2-D arrays pass through unchanged.
+    """
+    if arr is None or np.isscalar(arr):
+        return arr
+    arr = np.asarray(arr)
+    return arr[:, np.newaxis] if arr.ndim == 1 else arr
+
+
+def angular_spectrum_solve_2d(
+        initial_field: np.ndarray,
+        params: SolverParams,
+        verbose: bool = True,
+        **kwargs):
+    """
+    Propagate a 2-D (x, t) acoustic field using the angular spectrum method.
+
+    Thin wrapper around :func:`angular_spectrum_solve` that runs the 3-D
+    solver with a singleton y axis. This is exact, not approximate: with
+    nY = 1 the only transverse mode is k_y = 0, so the propagator reduces
+    to the 2-D dispersion relation k_z = sqrt(k^2 - k_x^2), and the
+    nonlinear, attenuation, and phase-screen operators act per-pixel in
+    time and are dimension-agnostic. Note this is Cartesian 2-D: sources
+    are line sources with cylindrical spreading, NOT axisymmetric 3-D.
+
+    Parameters
+    ----------
+    initial_field : ndarray, shape (nX, nT)
+        Initial pressure field at the source plane.
+    params : SolverParams
+        Same parameters as the 3-D solver. ``dY`` must still be positive
+        (set it equal to ``dX``); it does not affect the physics since a
+        singleton axis carries no bandwidth. Phase screens may be given
+        with 1-D (nX,) phase/amp/pow arrays; scalars pass through.
+    verbose, **kwargs
+        Forwarded to :func:`angular_spectrum_solve` (including the TOF
+        options).
+
+    Returns
+    -------
+    Same tuple layout as the 3-D solver with the y axis squeezed out:
+    field (nX, nT), pnp/ppp/pI/pIloss (nX, nZ), zaxis (nZ,),
+    pax (nT, nZ), and tof (nX, nZ) when TOF extraction is enabled.
+    """
+    initial_field = np.asarray(initial_field)
+    if initial_field.ndim != 2:
+        raise ValueError(
+            f'initial_field must be 2-D (nX, nT), got shape {initial_field.shape}')
+
+    if params.phaseScreens is not None:
+        screens_2d = []
+        for screen in params.phaseScreens:
+            # Screens: (z, phase), (z, phase, amp), or (z, phase, amp, y)
+            screens_2d.append(
+                (screen[0],) + tuple(_screen_array_2d(a) for a in screen[1:]))
+        params = _dc_replace(params, phaseScreens=screens_2d)
+
+    out = angular_spectrum_solve(
+        initial_field[:, np.newaxis, :], params, verbose=verbose, **kwargs)
+
+    # Squeeze the singleton y axis out of the (nX, 1, ...) outputs; zaxis
+    # (nZ,) and pax (nT, nZ) have no y axis and pass through.
+    field, pnp, ppp, pI, pIloss, zaxis, pax = out[:7]
+    squeezed = (field[:, 0, :], pnp[:, 0, :], ppp[:, 0, :],
+                pI[:, 0, :], pIloss[:, 0, :], zaxis, pax)
+    if len(out) == 8:  # TOF extraction enabled
+        squeezed = squeezed + (out[7][:, 0, :],)
+    return squeezed
